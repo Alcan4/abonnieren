@@ -15,7 +15,7 @@
 	<repository type="git">https://github.com/VogelbuschGmbH/abonnieren.git</repository>
 	<dependencies>
 		<php min-version="8.2"/>
-		<nextcloud min-version="34" max-version="34"/>
+		<nextcloud min-version="34" max-version="35"/>
 	</dependencies>
 	<activity>
 		<settings>
