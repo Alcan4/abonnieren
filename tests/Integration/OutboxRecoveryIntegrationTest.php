@@ -90,4 +90,56 @@ final class OutboxRecoveryIntegrationTest extends TestCase {
 			$q->executeStatement();
 		}
 	}
+	public function testRevokedFileAccessCancelsQueuedEmailAndClearsPayload(): void {
+		$db = \OC::$server->get(IDBConnection::class);
+		$uid = 'abo_ci_revoked_' . bin2hex(random_bytes(5));
+		try {
+			$q = $db->getQueryBuilder();
+			$q->insert('abonnieren_mail_outbox')->values([
+				'user_id' => $q->createNamedParameter($uid),
+				'node_id' => $q->createNamedParameter(965001),
+				'event_mask' => $q->createNamedParameter(SubscriptionService::EVENT_MODIFICATION),
+				'deleted' => $q->createNamedParameter(0),
+				'subject' => $q->createNamedParameter('Synthetic change'),
+				'body_text' => $q->createNamedParameter('Synthetic content'),
+				'body_html' => $q->createNamedParameter('<p>Synthetic content</p>'),
+				'status' => $q->createNamedParameter('pending'),
+				'created_at' => $q->createNamedParameter(time() - 10),
+				'updated_at' => $q->createNamedParameter(time() - 10),
+				'next_attempt_at' => $q->createNamedParameter(time() - 10),
+			]);
+			$q->executeStatement();
+			$id = $db->lastInsertId('abonnieren_mail_outbox');
+			$folder = $this->createMock(Folder::class);
+			$folder->expects($this->once())->method('getById')->with(965001)->willReturn([]);
+			$root = $this->createMock(IRootFolder::class);
+			$root->method('getUserFolder')->with($uid)->willReturn($folder);
+			$mail = $this->createMock(IMailer::class);
+			$mail->expects($this->never())->method('send');
+			$outbox = new MailOutbox(
+				$db, $this->createMock(IJobList::class), $root,
+				$this->createMock(IUserManager::class),
+				$this->createMock(SubscriptionService::class),
+				$mail, $this->createMock(LoggerInterface::class),
+			);
+			$outbox->deliverById($id);
+			$q = $db->getQueryBuilder();
+			$q->select('status', 'subject', 'body_text', 'body_html')
+				->from('abonnieren_mail_outbox')
+				->where($q->expr()->eq('id', $q->createNamedParameter($id)));
+			$result = $q->executeQuery();
+			$row = $result->fetch();
+			$result->closeCursor();
+			self::assertSame('cancelled', $row['status']);
+			self::assertSame('', $row['subject']);
+			self::assertSame('', $row['body_text']);
+			self::assertSame('', $row['body_html']);
+		} finally {
+			$q = $db->getQueryBuilder();
+			$q->delete('abonnieren_mail_outbox')
+				->where($q->expr()->eq('user_id', $q->createNamedParameter($uid)));
+			$q->executeStatement();
+		}
+	}
+
 }
