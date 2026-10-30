@@ -64,6 +64,7 @@ class SubscriptionPolicyTest extends TestCase {
 			'recursive' => 1,
 			'debounce_seconds' => $seconds,
 			'excluded_extensions' => $excluded,
+			'channel_mask' => SubscriptionService::CHANNEL_EMAIL,
 		];
 	}
 

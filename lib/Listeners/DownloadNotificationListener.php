@@ -9,6 +9,7 @@ use OCA\Abonnieren\Activity\Provider;
 use OCA\Abonnieren\Service\RecipientL10N;
 use OCA\Abonnieren\Service\RecipientMailDispatcher;
 use OCA\Abonnieren\Service\MailOutbox;
+use OCA\Abonnieren\Notification\NotificationPublisher;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
@@ -46,6 +47,7 @@ class DownloadNotificationListener implements IEventListener {
 		private IRequest $request,
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
+		private NotificationPublisher $nativePublisher,
 		private RecipientMailDispatcher $mailDispatcher,
 		ICacheFactory $cacheFactory,
 	) {
@@ -147,25 +149,39 @@ class DownloadNotificationListener implements IEventListener {
 			SubscriptionService::EVENT_DOWNLOAD,
 			$actorUserId ?? $this->userSession->getUser()?->getUID(),
 		);
-		$recipients = [];
+		$emailRecipients = [];
+		$nativeRecipients = [];
 		foreach ($policies as $userId => $policy) {
-			if ($policy['debounceSeconds'] > 0 && $this->cache->get($cacheKeyBase . ':' . $userId) === true) {
-				continue;
+			$seconds = $policy['debounceSeconds'];
+			if (($policy['channelMask'] & SubscriptionService::CHANNEL_EMAIL) !== 0
+				&& $policy['email'] !== ''
+				&& ($seconds === 0 || $this->cache->get($cacheKeyBase . ':' . $userId . ':email') !== true)) {
+				$emailRecipients[$userId] = $policy['email'];
 			}
-			$recipients[$userId] = $policy['email'];
+			if (($policy['channelMask'] & SubscriptionService::CHANNEL_NOTIFICATION) !== 0
+				&& ($seconds === 0 || $this->cache->get($cacheKeyBase . ':' . $userId . ':native') !== true)) {
+				$nativeRecipients[] = $userId;
+			}
 		}
-		if ($recipients === []) {
-			return;
+		$nativeSent = $this->nativePublisher->publishForRecipients(
+			$subscriptionNode, SubscriptionService::EVENT_DOWNLOAD, $nativeRecipients);
+		foreach ($nativeSent as $userId) {
+			$seconds = $policies[$userId]['debounceSeconds'];
+			if ($seconds > 0) {
+				$this->cache->set($cacheKeyBase . ':' . $userId . ':native', true, $seconds);
+			}
 		}
 
+		$emailQueued = [];
+		if ($emailRecipients !== []) {
 		try {
 			$isFolder = $node instanceof Folder;
 			$isPublicLink = $this->shareResolver->isPublicShare($share);
 			$path = $this->getUserRelativePath($subscriptionNode);
 			$token = $share?->getToken();
 
-			$queuedUserIds = $this->mailDispatcher->deliver(
-				$recipients,
+			$emailQueued = $this->mailDispatcher->deliver(
+				$emailRecipients,
 				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink, $path, $token): void {
 					$l10n = $this->recipientL10n->forUser($userId);
 					$subject = $isFolder
@@ -225,18 +241,12 @@ class DownloadNotificationListener implements IEventListener {
 				'Could not queue download notification',
 				['shareId' => $share !== null ? (int)$share->getId() : null, 'nodeId' => (int)$node->getId()],
 			);
-			foreach ($queuedUserIds as $userId) {
+			foreach ($emailQueued as $userId) {
 				$seconds = $policies[$userId]['debounceSeconds'];
 				if ($seconds > 0) {
-					$this->cache->set($cacheKeyBase . ':' . $userId, true, $seconds);
+					$this->cache->set($cacheKeyBase . ':' . $userId . ':email', true, $seconds);
 				}
 			}
-			$this->activityPublisher->publishForRecipients(
-				Provider::SUBJECT_DOWNLOADED,
-				$subscriptionNode,
-				$actorUserId ?? $this->userSession->getUser()?->getUID(),
-				$queuedUserIds,
-			);
 		} catch (\Throwable $e) {
 			$this->logger->error('Could not queue download notification', [
 				'app' => 'abonnieren',
@@ -245,6 +255,13 @@ class DownloadNotificationListener implements IEventListener {
 				'exception' => $e,
 			]);
 		}
+		}
+		$this->activityPublisher->publishForRecipients(
+			Provider::SUBJECT_DOWNLOADED,
+			$subscriptionNode,
+			$actorUserId ?? $this->userSession->getUser()?->getUID(),
+			array_values(array_unique([...$emailQueued, ...$nativeSent])),
+		);
 	}
 
 	private function getUserRelativePath(Node $node): string {

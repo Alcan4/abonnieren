@@ -9,6 +9,7 @@ use OCA\Abonnieren\Activity\Provider;
 use OCA\Abonnieren\Service\RecipientL10N;
 use OCA\Abonnieren\Service\RecipientMailDispatcher;
 use OCA\Abonnieren\Service\MailOutbox;
+use OCA\Abonnieren\Notification\NotificationPublisher;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
@@ -43,6 +44,7 @@ class FileUploadListener implements IEventListener {
 		private IUserSession $userSession,
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
+		private NotificationPublisher $nativePublisher,
 		private RecipientMailDispatcher $mailDispatcher,
 	) {
 		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
@@ -96,33 +98,49 @@ class FileUploadListener implements IEventListener {
 			$eventBit,
 			$actorUserId,
 		);
-		$recipients = [];
+		$emailRecipients = [];
+		$nativeRecipients = [];
 		foreach ($policies as $userId => $policy) {
-			if ($policy['debounceSeconds'] > 0 && $this->cache->get($cacheKeyBase . ':' . $userId) === true) {
-				continue;
+			$seconds = $policy['debounceSeconds'];
+			if (($policy['channelMask'] & SubscriptionService::CHANNEL_EMAIL) !== 0
+				&& $policy['email'] !== ''
+				&& ($seconds === 0 || $this->cache->get($cacheKeyBase . ':' . $userId . ':email') !== true)) {
+				$emailRecipients[$userId] = $policy['email'];
 			}
-			$recipients[$userId] = $policy['email'];
-		}
-		if ($recipients !== []) {
-			$queuedUserIds = $this->queueNotification($subscriptionNode, $recipients, $eventName, $eventBit, $actorUserId, $isPublicLink);
-			foreach ($queuedUserIds as $userId) {
-				$seconds = $policies[$userId]['debounceSeconds'];
-				if ($seconds > 0) {
-					$this->cache->set($cacheKeyBase . ':' . $userId, true, $seconds);
-				}
+			if (($policy['channelMask'] & SubscriptionService::CHANNEL_NOTIFICATION) !== 0
+				&& ($seconds === 0 || $this->cache->get($cacheKeyBase . ':' . $userId . ':native') !== true)) {
+				$nativeRecipients[] = $userId;
 			}
-			$activitySubject = match ($eventName) {
-				'created' => Provider::SUBJECT_CREATED,
-				'deleted' => Provider::SUBJECT_DELETED,
-				default => Provider::SUBJECT_MODIFIED,
-			};
-			$this->activityPublisher->publishForRecipients(
-				$activitySubject,
-				$subscriptionNode,
-				$actorUserId,
-				$queuedUserIds,
-			);
 		}
+
+		// A failing SMTP enqueue never prevents an independent native notification.
+		$nativeSent = $this->nativePublisher->publishForRecipients($subscriptionNode, $eventBit, $nativeRecipients);
+		$emailQueued = $emailRecipients !== []
+			? $this->queueNotification($subscriptionNode, $emailRecipients, $eventName, $eventBit, $actorUserId, $isPublicLink)
+			: [];
+		foreach ($emailQueued as $userId) {
+			$seconds = $policies[$userId]['debounceSeconds'];
+			if ($seconds > 0) {
+				$this->cache->set($cacheKeyBase . ':' . $userId . ':email', true, $seconds);
+			}
+		}
+		foreach ($nativeSent as $userId) {
+			$seconds = $policies[$userId]['debounceSeconds'];
+			if ($seconds > 0) {
+				$this->cache->set($cacheKeyBase . ':' . $userId . ':native', true, $seconds);
+			}
+		}
+		$activitySubject = match ($eventName) {
+			'created' => Provider::SUBJECT_CREATED,
+			'deleted' => Provider::SUBJECT_DELETED,
+			default => Provider::SUBJECT_MODIFIED,
+		};
+		$this->activityPublisher->publishForRecipients(
+			$activitySubject,
+			$subscriptionNode,
+			$actorUserId,
+			array_values(array_unique([...$emailQueued, ...$nativeSent])),
+		);
 
 		if ($event instanceof NodeDeletedEvent) {
 			$this->subscriptionService->deleteRulesForNode((int)$node->getId());
