@@ -98,10 +98,10 @@ class MailOutbox {
 			$this->mailer->send($message);
 			$this->discard($id);
 		} catch (\Throwable $e) {
-			$this->setStatus($id, 'failed');
 			$this->logger->error('Could not deliver queued subscription mail', [
 				'app' => 'abonnieren', 'outboxId' => $id, 'exception' => $e,
 			]);
+			$this->setStatus($id, 'failed');
 		}
 	}
 
