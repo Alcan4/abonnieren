@@ -149,7 +149,7 @@ class MailOutbox {
 		$qb = $this->db->getQueryBuilder();
 		$qb->update(self::TABLE)
 			->set('status', $qb->createNamedParameter('sending'))
-			->set('attempts', 'attempts + 1')
+			->set('attempts', $qb->createFunction('attempts + 1'))
 			->set('lease_token', $qb->createNamedParameter($token))
 			->set('lease_until', $qb->createNamedParameter($now + MailRetryPolicy::LEASE_SECONDS))
 			->set('updated_at', $qb->createNamedParameter($now))
@@ -299,7 +299,7 @@ class MailOutbox {
 		$qb = $this->db->getQueryBuilder();
 		$qb->update(self::TABLE)
 			->set('status', $qb->createNamedParameter('sending'))
-			->set('attempts', 'attempts + 1')
+			->set('attempts', $qb->createFunction('attempts + 1'))
 			->set('lease_token', $qb->createNamedParameter($token))
 			->set('lease_until', $qb->createNamedParameter($now + MailRetryPolicy::LEASE_SECONDS))
 			->set('updated_at', $qb->createNamedParameter($now))
@@ -389,7 +389,7 @@ class MailOutbox {
 		$qb = $this->db->getQueryBuilder();
 		$qb->update(self::TABLE)
 			->set('status', $qb->createNamedParameter('pending'))
-			->set('attempts', 'attempts - 1')
+			->set('attempts', $qb->createFunction('attempts - 1'))
 			->set('next_attempt_at', $qb->createNamedParameter($due))
 			->set('lease_token', $qb->createNamedParameter(null))
 			->set('lease_until', $qb->createNamedParameter(0))
