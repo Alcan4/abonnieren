@@ -154,9 +154,10 @@ jobs:
         uses: shivammathur/setup-php@ccf2c627fe61b1b4d924adfcbd19d661a18133a0 # v2.35.2
         with:
           php-version: '8.3'
-          extensions: bz2, ctype, curl, dom, fileinfo, gd, iconv, intl, mbstring, openssl, pdo_sqlite, sqlite3, xml, xmlreader, xmlwriter, zip
+          extensions: bz2, ctype, curl, dom, fileinfo, gd, iconv, intl, mbstring, openssl, pcntl, pdo_sqlite, sqlite3, xml, xmlreader, xmlwriter, zip
           coverage: none
           ini-file: development
+          ini-values: disable_functions=
 
       - name: Install original 1.1.2 app and create a legacy subscription
         run: |
@@ -165,7 +166,13 @@ jobs:
           mkdir -p data
           php occ maintenance:install --database=sqlite --admin-user=admin --admin-pass=admin
           php occ app:enable abonnieren
-          test "$(php occ config:app:get abonnieren installed_version)" = "1.1.2"
+          php -r '
+            require "lib/base.php";
+            $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
+            if (($versions["abonnieren"] ?? null) !== "1.1.2") {
+              throw new \RuntimeException("Baseline app version wrong: " . json_encode($versions["abonnieren"] ?? null));
+            }
+          '
           php -r '
             require "lib/base.php";
             $db = \OC::$server->get(\OCP\IDBConnection::class);
@@ -185,7 +192,13 @@ jobs:
         run: |
           git -C apps/abonnieren checkout --detach "$(cat /tmp/abonnieren-new-sha)"
           php occ upgrade --no-interaction
-          test "$(php occ config:app:get abonnieren installed_version)" = "1.1.11"
+          php -r '
+            require "lib/base.php";
+            $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
+            if (($versions["abonnieren"] ?? null) !== "1.1.11") {
+              throw new \RuntimeException("App migration version wrong: " . json_encode($versions["abonnieren"] ?? null));
+            }
+          '
 
       - name: Verify existing subscription survived with safe feature defaults
         run: |
