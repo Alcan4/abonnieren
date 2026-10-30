@@ -18,10 +18,11 @@ class UploadBatchCoordinatorTest extends TestCase {
 		$db->expects($this->once())->method('beginTransaction');
 		$db->expects($this->once())->method('commit');
 		$db->expects($this->never())->method('rollBack');
-		$db->expects($this->once())->method('insertIfNotExist');
 
 		$qb = $this->createMock(IQueryBuilder::class);
 		$db->method('getQueryBuilder')->willReturn($qb);
+		$qb->method('insert')->willReturnSelf();
+		$qb->method('values')->willReturnSelf();
 		$qb->method('select')->willReturnSelf();
 		$qb->method('from')->willReturnSelf();
 		$qb->method('where')->willReturnSelf();
@@ -47,7 +48,7 @@ class UploadBatchCoordinatorTest extends TestCase {
 			'due_at' => 1130,
 			'item_count' => 2,
 		]);
-		$qb->expects($this->exactly(2))->method('executeStatement');
+		$qb->expects($this->exactly(3))->method('executeStatement');
 		$seen = [];
 		$qb->method('set')->willReturnCallback(static function (string $name, mixed $value) use (&$seen, $qb) {
 			$seen[] = $name;
@@ -74,7 +75,7 @@ class UploadBatchCoordinatorTest extends TestCase {
 			'due_at' => 1130,
 			'item_count' => 3,
 		]);
-		$qb->expects($this->once())->method('executeStatement');
+		$qb->expects($this->exactly(2))->method('executeStatement');
 		$result = (new UploadBatchCoordinator($db))->add(
 			'alice', 'uploader', 22, 1130,
 			static function (string $key, int $due): int {
