@@ -5,7 +5,7 @@
  * From Nextcloud root:
  *   php apps/abonnieren/tests/Integration/cron_delivery_smoke.php seed /tmp/abo-cron-id
  *   php occ background:cron
- *   php -f cron.php
+ *   php occ background-job:worker --once 'OCA\Abonnieren\BackgroundJob\DeliverMailJob'
  *   php apps/abonnieren/tests/Integration/cron_delivery_smoke.php verify /tmp/abo-cron-id
  *
  * The target node is deliberately nonexistent, so real worker must cancel
