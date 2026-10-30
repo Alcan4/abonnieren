@@ -42,11 +42,11 @@ final class DigestSchedule {
 		return EmailSchedule::dueAt($target->getTimestamp(), $quietStart, $quietEnd, $timezone);
 	}
 
-	public static function key(string $recipient, int $due): string {
+	public static function key(string $recipient, int $due, string $quietStart = '', string $quietEnd = '', string $timezone = 'UTC'): string {
 		if ($recipient === '' || $due < 1) {
 			throw new \InvalidArgumentException('Invalid digest recipient or deadline');
 		}
-		return hash('sha256', json_encode([$recipient, $due], JSON_THROW_ON_ERROR));
+		return hash('sha256', json_encode([$recipient, $due, $quietStart, $quietEnd, $timezone], JSON_THROW_ON_ERROR));
 	}
 
 	/**
