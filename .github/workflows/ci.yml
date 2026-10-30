@@ -81,6 +81,18 @@ jobs:
         working-directory: apps/abonnieren
         run: composer run test:unit
 
+      - name: Exercise real concurrent database updates
+        run: php apps/abonnieren/tests/Integration/concurrent_upload_smoke.php
+
+      - name: Exercise actual Nextcloud cron and inaccessible queued mail
+        run: |
+          marker="/tmp/abo-cron-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$.id"
+          trap 'rm -f "$marker"' EXIT
+          php apps/abonnieren/tests/Integration/cron_delivery_smoke.php seed "$marker"
+          php occ background:cron
+          php -f cron.php
+          php apps/abonnieren/tests/Integration/cron_delivery_smoke.php verify "$marker"
+
       - name: Show test-server logs on failure
         if: failure()
         run: |
