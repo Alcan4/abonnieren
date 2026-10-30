@@ -49,7 +49,10 @@ final class FolderExclusions {
 	 * @param list<string> $excluded
 	 * @param list<string> $relativeSegments Directory/file names below the subscription node.
 	 */
-	public static function matches(array $excluded, array $relativeSegments): bool {
+	public static function matches(array $excluded, array $relativeSegments, bool $isFile = false): bool {
+		if ($isFile) {
+			array_pop($relativeSegments); // The final segment is a filename, not a directory.
+		}
 		if ($relativeSegments === []) {
 			return false;
 		}
