@@ -7,6 +7,7 @@ namespace OCA\Abonnieren\Listeners;
 use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Activity\Provider;
 use OCA\Abonnieren\Service\RecipientL10N;
+use OCA\Abonnieren\Service\RecipientMailDispatcher;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
@@ -43,6 +44,7 @@ class DownloadNotificationListener implements IEventListener {
 		private IRequest $request,
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
+		private RecipientMailDispatcher $mailDispatcher,
 		ICacheFactory $cacheFactory,
 	) {
 		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
@@ -170,7 +172,9 @@ class DownloadNotificationListener implements IEventListener {
 			$path = $this->getUserRelativePath($subscriptionNode);
 			$token = $share?->getToken();
 
-			foreach ($recipients as $userId => $email) {
+			$this->mailDispatcher->deliver(
+				$recipients,
+				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $isFolder, $isPublicLink, $path, $token): void {
 				$l10n = $this->recipientL10n->forUser($userId);
 				$subject = $isFolder
 					? ($isPublicLink
@@ -229,7 +233,10 @@ class DownloadNotificationListener implements IEventListener {
 				$message->setHtmlBody($template->renderHtml());
 				$message->setTo([$email]);
 				$this->mailer->send($message);
-			}
+				},
+				'Could not send download notification',
+				['shareId' => $share !== null ? (int)$share->getId() : null, 'nodeId' => (int)$node->getId()],
+			);
 		} catch (\Throwable $e) {
 			$this->logger->error('Could not send download notification', [
 				'app' => 'abonnieren',
