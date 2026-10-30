@@ -144,13 +144,13 @@ jobs:
       - name: Exercise real concurrent database updates
         run: php apps/abonnieren/tests/Integration/concurrent_upload_smoke.php
 
-      - name: Exercise actual Nextcloud cron and inaccessible queued mail
+      - name: Exercise Nextcloud background-job worker and inaccessible queued mail
         run: |
           marker="/tmp/abo-cron-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$.id"
           trap 'rm -f "$marker"' EXIT
           php apps/abonnieren/tests/Integration/cron_delivery_smoke.php seed "$marker"
           php occ background:cron
-          php -f cron.php
+          php occ background-job:worker --once 'OCA\Abonnieren\BackgroundJob\DeliverMailJob'
           php apps/abonnieren/tests/Integration/cron_delivery_smoke.php verify "$marker"
 
       - name: Show sanitized server log tail on failure
