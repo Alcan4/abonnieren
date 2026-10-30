@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace OCA\Abonnieren\Service;
 
 use OCA\Abonnieren\BackgroundJob\DeliverMailJob;
+use OCA\Abonnieren\BackgroundJob\DeliverUploadBatchJob;
 use OCP\BackgroundJob\IJobList;
 use OCP\DB\QueryBuilder\IQueryBuilder;
+use OCP\Files\File;
 use OCP\Files\IRootFolder;
 use OCP\Files\Node;
 use OCP\IDBConnection;
@@ -39,10 +41,41 @@ class MailOutbox {
 			try {
 				$parentId = (int)$node->getParent()->getId();
 			} catch (\Throwable $e) {
-				// Missing parent must fail closed when we check access.
+				// A missing parent fails closed during worker access checks.
 			}
 		}
+
 		$now = time();
+		if ($event === SubscriptionService::EVENT_UPLOAD && $node instanceof File && $actor !== null && $actor !== '') {
+			try {
+				$folderId = (int)$node->getParent()->getId();
+				if ($folderId > 0) {
+					$reserved = (new UploadBatchCoordinator($this->db))->add(
+						$userId, $actor, $folderId, $now,
+						fn (string $key, int $due): int => $this->insertRow(
+							$userId, $node, $parentId, $event, $actor, $deleted, $subject, $text, $html,
+							$now, $due, $key, mb_substr($node->getName(), 0, 255),
+						),
+					);
+					$this->schedule($reserved['id'], $reserved['due'], true);
+					return;
+				}
+			} catch (\Throwable $e) {
+				$this->logger->warning('Upload grouping unavailable; sending an individual notification', [
+					'app' => 'abonnieren', 'nodeId' => (int)$node->getId(), 'exception' => $e,
+				]);
+			}
+		}
+
+		$id = $this->insertRow($userId, $node, $parentId, $event, $actor, $deleted,
+			$subject, $text, $html, $now, $now, '', '');
+		$this->schedule($id, $now);
+	}
+
+	private function insertRow(
+		string $userId, Node $node, ?int $parentId, int $event, ?string $actor, bool $deleted,
+		string $subject, string $text, string $html, int $now, int $due, string $batchKey, string $itemName,
+	): int {
 		$qb = $this->db->getQueryBuilder();
 		$qb->insert(self::TABLE)->values([
 			'user_id' => $qb->createNamedParameter($userId),
@@ -57,20 +90,22 @@ class MailOutbox {
 			'status' => $qb->createNamedParameter('pending'),
 			'created_at' => $qb->createNamedParameter($now),
 			'updated_at' => $qb->createNamedParameter($now),
-			'next_attempt_at' => $qb->createNamedParameter($now),
+			'next_attempt_at' => $qb->createNamedParameter($due),
 			'attempts' => $qb->createNamedParameter(0),
 			'lease_until' => $qb->createNamedParameter(0),
 			'completed_at' => $qb->createNamedParameter(0),
+			'batch_key' => $qb->createNamedParameter($batchKey),
+			'batch_until' => $qb->createNamedParameter($batchKey !== '' ? $due : 0),
+			'item_name' => $qb->createNamedParameter($itemName),
 		]);
 		$qb->executeStatement();
-		$id = $this->db->lastInsertId(self::TABLE);
-		$this->schedule($id, $now);
+		return $this->db->lastInsertId(self::TABLE);
 	}
 
-	private function schedule(int $id, int $at): void {
+	private function schedule(int $id, int $at, bool $batch = false): void {
 		try {
 			// Arguments may be logged by Nextcloud. Keep sensitive data in DB.
-			$this->jobList->scheduleAfter(DeliverMailJob::class, $at, ['id' => $id]);
+			$this->jobList->scheduleAfter($batch ? DeliverUploadBatchJob::class : DeliverMailJob::class, $at, ['id' => $id]);
 		} catch (\Throwable $e) {
 			// Outbox row remains pending; periodic recovery will reschedule.
 			$this->logger->error('Could not schedule outbox delivery', [
