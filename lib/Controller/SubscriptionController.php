@@ -123,7 +123,8 @@ class SubscriptionController extends Controller {
 			$this->subscriptionService->upsertRule($userId, $nodeId, $eventMask, $recursive,
 				(int)$debounceRaw, $excludedExtensions, (int)$channelsRaw,
 				$quietStart, $quietEnd, $quietTimezone, $digestMode, $digestTime,
-				(int)$expiresRaw, (int)$snoozedRaw);
+				(int)$expiresRaw, (int)$snoozedRaw,
+				(string)$this->request->getParam('excludedFolders', ''));
 		} catch (\InvalidArgumentException $e) {
 			return new DataResponse(['success' => false, 'message' => $e->getMessage()], Http::STATUS_BAD_REQUEST);
 		}
