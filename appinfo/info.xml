@@ -5,7 +5,7 @@
 	<name>Abonnieren</name>
 	<summary>File and folder subscriptions with email notifications</summary>
 	<description>Subscribe to files and folders and receive email notifications for downloads, uploads, modifications and deletions. Rules can be managed per object in the Files sidebar or from the subscription overview.</description>
-	<version>1.1.6</version>
+	<version>1.1.7</version>
 	<licence>AGPL-3.0-or-later</licence>
 	<author mail="contact@ti2m.dev">Timm Meisinger</author>
 	<namespace>Abonnieren</namespace>
