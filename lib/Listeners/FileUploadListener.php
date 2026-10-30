@@ -7,6 +7,7 @@ namespace OCA\Abonnieren\Listeners;
 use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Activity\Provider;
 use OCA\Abonnieren\Service\RecipientL10N;
+use OCA\Abonnieren\Service\RecipientMailDispatcher;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
@@ -40,6 +41,7 @@ class FileUploadListener implements IEventListener {
 		private IUserSession $userSession,
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
+		private RecipientMailDispatcher $mailDispatcher,
 	) {
 		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
 	}
@@ -122,7 +124,9 @@ class FileUploadListener implements IEventListener {
 			$isFolder = $node instanceof Folder;
 			$path = $this->getUserRelativePath($node);
 
-			foreach ($recipients as $userId => $email) {
+			$this->mailDispatcher->deliver(
+				$recipients,
+				function (string $userId, string $email) use ($node, $eventName, $isFolder, $path, $publicLinkActivity): void {
 				$l10n = $this->recipientL10n->forUser($userId);
 				$subject = $this->getSubject($l10n, $isFolder, $eventName);
 				$description = $this->getDescription($l10n, $publicLinkActivity);
@@ -155,7 +159,10 @@ class FileUploadListener implements IEventListener {
 				$message->setHtmlBody($template->renderHtml());
 				$message->setTo([$email]);
 				$this->mailer->send($message);
-			}
+				},
+				'Could not send file event notification',
+				['nodeId' => (int)$node->getId(), 'event' => $eventName],
+			);
 		} catch (\Throwable $e) {
 			$this->logger->error('Could not send file event notification', [
 				'app' => 'abonnieren',
