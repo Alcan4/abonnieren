@@ -300,4 +300,97 @@ final class InstalledDatabaseTest extends TestCase {
 		}
 	}
 
+	/**
+	 * A queued deletion can outlive the parent subscription that requested it.
+	 * Do not send the cached deleted filename after the user unsubscribes.
+	 */
+	public function testQueuedDeletionCancelsAfterParentSubscriptionIsRemoved(): void {
+		$parentId = 7800000 + random_int(1, 100000);
+		$nodeId = $parentId + 1;
+		$parent = $this->createMock(Folder::class);
+		$parent->method('getId')->willReturn($parentId);
+		$parent->method('getName')->willReturn('Subscribed');
+		$parent->method('getParent')->willThrowException(new \RuntimeException('root'));
+		$file = $this->createMock(File::class);
+		$file->method('getId')->willReturn($nodeId);
+		$file->method('getName')->willReturn('private-deleted.pdf');
+		$file->method('getParent')->willReturn($parent);
+
+		$folder = $this->createMock(Folder::class);
+		$folder->method('getById')->willReturnCallback(
+			static fn (int $id): array => $id === $parentId ? [$parent] : [],
+		);
+		$root = $this->createMock(IRootFolder::class);
+		$root->method('getUserFolder')->with($this->uid)->willReturn($folder);
+		$user = $this->createMock(IUser::class);
+		$user->method('getEMailAddress')->willReturn('integration@example.test');
+		$users = $this->createMock(IUserManager::class);
+		$users->method('get')->with($this->uid)->willReturn($user);
+		$subscriptions = new SubscriptionService($this->db, $users, $root);
+		$subscriptions->upsertRule($this->uid, $parentId, SubscriptionService::EVENT_DELETION, true);
+		$policies = $subscriptions->getRecipientPoliciesForNode($file, SubscriptionService::EVENT_DELETION);
+		self::assertSame($parentId, $policies[$this->uid]['ruleNodeId']);
+		self::assertSame(64, strlen($policies[$this->uid]['ruleHash']));
+
+		$mailer = $this->createMock(IMailer::class);
+		$mailer->expects($this->never())->method('send');
+		$jobs = $this->createMock(IJobList::class);
+		$jobs->expects($this->once())->method('scheduleAfter');
+		$outbox = new MailOutbox($this->db, $jobs, $root, $users,
+			$subscriptions, $mailer, $this->createMock(LoggerInterface::class));
+		$outbox->enqueue($this->uid, $file, SubscriptionService::EVENT_DELETION,
+			'editor', true, 'File deleted', 'private filename', '<p>private filename</p>',
+			$policies[$this->uid]);
+		$row = $this->row('abonnieren_mail_outbox', 'user_id', $this->uid);
+		self::assertSame($parentId, (int)$row['source_rule_id']);
+
+		$subscriptions->deleteRule($this->uid, $parentId);
+		$outbox->deliverById((int)$row['id']);
+		$done = $this->row('abonnieren_mail_outbox', 'id', (int)$row['id']);
+		self::assertSame('cancelled', $done['status']);
+		self::assertSame('', $done['body_text']);
+	}
+
+	public function testDeletedFileDirectSubscriptionStillDeliversAfterAutomaticRuleCleanup(): void {
+		$parentId = 7900000 + random_int(1, 100000);
+		$nodeId = $parentId + 1;
+		$parent = $this->createMock(Folder::class);
+		$parent->method('getId')->willReturn($parentId);
+		$parent->method('getName')->willReturn('Visible');
+		$parent->method('getParent')->willThrowException(new \RuntimeException('root'));
+		$file = $this->createMock(File::class);
+		$file->method('getId')->willReturn($nodeId);
+		$file->method('getName')->willReturn('deleted.txt');
+		$file->method('getParent')->willReturn($parent);
+		$folder = $this->createMock(Folder::class);
+		$folder->method('getById')->willReturnCallback(
+			static fn (int $id): array => $id === $parentId ? [$parent] : [],
+		);
+		$root = $this->createMock(IRootFolder::class);
+		$root->method('getUserFolder')->with($this->uid)->willReturn($folder);
+		$user = $this->createMock(IUser::class);
+		$user->method('getEMailAddress')->willReturn('integration@example.test');
+		$users = $this->createMock(IUserManager::class);
+		$users->method('get')->with($this->uid)->willReturn($user);
+		$subscriptions = new SubscriptionService($this->db, $users, $root);
+		$subscriptions->upsertRule($this->uid, $nodeId, SubscriptionService::EVENT_DELETION, false);
+		$policies = $subscriptions->getRecipientPoliciesForNode($file, SubscriptionService::EVENT_DELETION);
+		self::assertSame($nodeId, $policies[$this->uid]['ruleNodeId']);
+
+		$mailer = $this->createMock(IMailer::class);
+		$mailer->method('createMessage')->willReturn($this->createMock(IMessage::class));
+		$mailer->expects($this->once())->method('send')->willReturn([]);
+		$outbox = new MailOutbox($this->db, $this->createMock(IJobList::class),
+			$root, $users, $subscriptions, $mailer, $this->createMock(LoggerInterface::class));
+		$outbox->enqueue($this->uid, $file, SubscriptionService::EVENT_DELETION,
+			'editor', true, 'File deleted', 'original content', '<p>original content</p>',
+			$policies[$this->uid]);
+		$row = $this->row('abonnieren_mail_outbox', 'user_id', $this->uid);
+		self::assertSame($nodeId, (int)$row['source_rule_id']);
+		$subscriptions->deleteRulesForNode($nodeId);
+		$outbox->deliverById((int)$row['id']);
+		self::assertSame('sent',
+			$this->row('abonnieren_mail_outbox', 'id', (int)$row['id'])['status']);
+	}
+
 }
