@@ -11,6 +11,7 @@ use OCA\Abonnieren\Service\RecipientMailDispatcher;
 use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Notification\NotificationPublisher;
 use OCA\Abonnieren\Service\ShareContextResolver;
+use OCA\Abonnieren\Service\RecipientVisiblePath;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
 use OCP\EventDispatcher\Event;
@@ -45,6 +46,7 @@ class FileUploadListener implements IEventListener {
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
 		private NotificationPublisher $nativePublisher,
+		private RecipientVisiblePath $recipientVisiblePath,
 		private RecipientMailDispatcher $mailDispatcher,
 	) {
 		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
@@ -152,32 +154,35 @@ class FileUploadListener implements IEventListener {
 	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity, array $policies): array {
 		try {
 			$isFolder = $node instanceof Folder;
-			$path = $this->getUserRelativePath($node);
+
 
 			$queuedUserIds = $this->mailDispatcher->deliver(
 				$recipients,
-				function (string $userId, string $email) use ($node, $eventName, $eventBit, $actorUserId, $isFolder, $path, $publicLinkActivity, $policies): void {
+				function (string $userId, string $email) use ($node, $eventName, $eventBit, $actorUserId, $isFolder, $publicLinkActivity, $policies): void {
 					$l10n = $this->recipientL10n->forUser($userId);
 					$subject = $this->getSubject($l10n, $isFolder, $eventName);
 					$description = $this->getDescription($l10n, $publicLinkActivity);
 
+					$recipientPath = $this->recipientVisiblePath->pathFor($userId, $node, $eventName === 'deleted');
 					$template = $this->mailer->createEMailTemplate('abonnieren_file_event');
 					$template->setSubject($subject);
 					$template->addHeader();
 					$template->addHeading($subject);
 					$template->addBodyText($description);
 					$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
-					$template->addBodyListItem($l10n->t('Path:') . ' ' . dirname($path));
+					if ($recipientPath !== null) {
+						$template->addBodyListItem($l10n->t('Path:') . ' ' . dirname($recipientPath));
+					}
 					$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
 					$template->addBodyListItem($l10n->t('Type:') . ' ' . ($node instanceof File ? $node->getMimeType() : $l10n->t('Folder')));
 					$template->addBodyListItem($l10n->t('Changed by:') . ' ' . $this->getActorDisplayName($l10n, $publicLinkActivity));
 					$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
 
-					if ($eventName !== 'deleted') {
+					if ($eventName !== 'deleted' && $recipientPath !== null) {
 						$template->addBodyButton(
 							$l10n->t('Open file'),
 							$this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
-								'dir' => $isFolder ? $path : dirname($path),
+								'dir' => $isFolder ? $recipientPath : dirname($recipientPath),
 								'fileid' => (string)$node->getId(),
 							]),
 						);
