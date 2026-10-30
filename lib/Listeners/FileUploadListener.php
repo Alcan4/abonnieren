@@ -127,38 +127,38 @@ class FileUploadListener implements IEventListener {
 			$this->mailDispatcher->deliver(
 				$recipients,
 				function (string $userId, string $email) use ($node, $eventName, $isFolder, $path, $publicLinkActivity): void {
-				$l10n = $this->recipientL10n->forUser($userId);
-				$subject = $this->getSubject($l10n, $isFolder, $eventName);
-				$description = $this->getDescription($l10n, $publicLinkActivity);
+					$l10n = $this->recipientL10n->forUser($userId);
+					$subject = $this->getSubject($l10n, $isFolder, $eventName);
+					$description = $this->getDescription($l10n, $publicLinkActivity);
 
-				$message = $this->mailer->createMessage();
-				$message->setSubject($subject);
-				$template = $this->mailer->createEMailTemplate('abonnieren_file_event');
-				$template->setSubject($subject);
-				$template->addHeader();
-				$template->addHeading($subject);
-				$template->addBodyText($description);
-				$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
-				$template->addBodyListItem($l10n->t('Path:') . ' ' . dirname($path));
-				$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
-				$template->addBodyListItem($l10n->t('Type:') . ' ' . ($node instanceof File ? $node->getMimeType() : $l10n->t('Folder')));
-				$template->addBodyListItem($l10n->t('Changed by:') . ' ' . $this->getActorDisplayName($l10n, $publicLinkActivity));
-				$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
+					$message = $this->mailer->createMessage();
+					$message->setSubject($subject);
+					$template = $this->mailer->createEMailTemplate('abonnieren_file_event');
+					$template->setSubject($subject);
+					$template->addHeader();
+					$template->addHeading($subject);
+					$template->addBodyText($description);
+					$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
+					$template->addBodyListItem($l10n->t('Path:') . ' ' . dirname($path));
+					$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
+					$template->addBodyListItem($l10n->t('Type:') . ' ' . ($node instanceof File ? $node->getMimeType() : $l10n->t('Folder')));
+					$template->addBodyListItem($l10n->t('Changed by:') . ' ' . $this->getActorDisplayName($l10n, $publicLinkActivity));
+					$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
 
-				if ($eventName !== 'deleted') {
-					$template->addBodyButton(
-						$l10n->t('Open file'),
-						$this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
-							'dir' => $isFolder ? $path : dirname($path),
-							'fileid' => (string)$node->getId(),
-						]),
-					);
-				}
-				$template->addFooter();
-				$message->setBody($template->renderText(), 'text/plain');
-				$message->setHtmlBody($template->renderHtml());
-				$message->setTo([$email]);
-				$this->mailer->send($message);
+					if ($eventName !== 'deleted') {
+						$template->addBodyButton(
+							$l10n->t('Open file'),
+							$this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
+								'dir' => $isFolder ? $path : dirname($path),
+								'fileid' => (string)$node->getId(),
+							]),
+						);
+					}
+					$template->addFooter();
+					$message->setBody($template->renderText(), 'text/plain');
+					$message->setHtmlBody($template->renderHtml());
+					$message->setTo([$email]);
+					$this->mailer->send($message);
 				},
 				'Could not send file event notification',
 				['nodeId' => (int)$node->getId(), 'event' => $eventName],
