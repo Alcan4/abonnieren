@@ -107,9 +107,14 @@ class SubscriptionController extends Controller {
 			return new DataResponse(['success' => false, 'message' => 'Invalid notification channels'], Http::STATUS_BAD_REQUEST);
 		}
 
+		$quietStart = (string)$this->request->getParam('quietStart', '');
+		$quietEnd = (string)$this->request->getParam('quietEnd', '');
+		$quietTimezone = (string)$this->request->getParam('quietTimezone', 'UTC');
+
 		try {
 			$this->subscriptionService->upsertRule($userId, $nodeId, $eventMask, $recursive,
-				(int)$debounceRaw, $excludedExtensions, (int)$channelsRaw);
+				(int)$debounceRaw, $excludedExtensions, (int)$channelsRaw,
+				$quietStart, $quietEnd, $quietTimezone);
 		} catch (\InvalidArgumentException $e) {
 			return new DataResponse(['success' => false, 'message' => $e->getMessage()], Http::STATUS_BAD_REQUEST);
 		}
