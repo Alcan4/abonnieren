@@ -29,7 +29,8 @@ class MailOutboxTest extends TestCase {
 		$qb->expects($this->once())->method('executeStatement');
 		$db->method('lastInsertId')->with('abonnieren_mail_outbox')->willReturn(123);
 		$jobs = $this->createMock(IJobList::class);
-		$jobs->expects($this->once())->method('add')->with(DeliverMailJob::class, ['id' => 123]);
+		$jobs->expects($this->once())->method('scheduleAfter')->with(DeliverMailJob::class,
+			self::callback(static fn ($when): bool => is_int($when) && $when <= time()), ['id' => 123]);
 		$mailer = $this->createMock(IMailer::class);
 		$mailer->expects($this->never())->method('send');
 		$node = $this->createMock(Node::class);
