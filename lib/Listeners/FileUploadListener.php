@@ -25,6 +25,7 @@ use OCP\ICacheFactory;
 use OCP\IL10N;
 use OCP\IUserSession;
 use OCP\IURLGenerator;
+use OCP\Mail\IMailer;
 use Psr\Log\LoggerInterface;
 
 /** @template-implements IEventListener<NodeCreatedEvent|NodeDeletedEvent|NodeWrittenEvent|Event> */
@@ -33,6 +34,7 @@ class FileUploadListener implements IEventListener {
 
 	public function __construct(
 		private MailOutbox $outbox,
+		private IMailer $mailer,
 		private RecipientL10N $recipientL10n,
 		private LoggerInterface $logger,
 		private SubscriptionService $subscriptionService,
