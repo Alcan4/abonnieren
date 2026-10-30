@@ -10,6 +10,7 @@ These checks run on disposable Nextcloud 35 instances in GitHub Actions:
 - Six separate PHP processes append to the same upload batch. All six rows must persist under one batch and one sliding deadline.
 - The Nextcloud background-job worker processes a *real queued job* with a nonexistent file and cancels it, leaving no email content stored.
 - SMTP error (fake transport) leads to a pending row with future retry time; after the simulated delay the second send succeeds, and the row's body is cleared.
+- A separate Mailpit service captures one **real SMTP message** sent by the queued Nextcloud worker, using a throwaway file, subscription, and recipient. The test also confirms the outbox body is erased after successful delivery.
 - A change to current file access cancels queued messages; grouped delivery omits inaccessible items.
 - The existing CI jobs also exercise app upgrades from 1.1.2 to 1.1.12 on SQLite, MariaDB and PostgreSQL.
 
