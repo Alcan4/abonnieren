@@ -139,6 +139,10 @@ class MailOutbox {
 		if ($row === null) {
 			return; // Reconciler will recover the abandoned lease if necessary.
 		}
+		if ((string)($row['batch_key'] ?? '') !== '') {
+			$this->retry($id, $token, (int)$row['attempts'], new \RuntimeException('Batch row routed to regular delivery job'), true);
+			return;
+		}
 		$attempts = (int)$row['attempts'];
 		$userId = (string)$row['user_id'];
 		$deleted = (bool)$row['deleted'];
@@ -328,6 +332,7 @@ class MailOutbox {
 			->set('subject', $qb->createNamedParameter(''))
 			->set('body_text', $qb->createNamedParameter(''))
 			->set('body_html', $qb->createNamedParameter(''))
+			->set('item_name', $qb->createNamedParameter(''))
 			->set('lease_token', $qb->createNamedParameter(null))
 			->set('lease_until', $qb->createNamedParameter(0))
 			->set('updated_at', $qb->createNamedParameter($now))
@@ -338,7 +343,7 @@ class MailOutbox {
 		$qb->executeStatement();
 	}
 
-	private function retry(int $id, string $token, int $attempts, \Throwable $e): void {
+	private function retry(int $id, string $token, int $attempts, \Throwable $e, bool $batch = false): void {
 		$this->logger->error('Queued subscription email delivery failed', [
 			'app' => 'abonnieren', 'outboxId' => $id, 'attempt' => $attempts, 'exception' => $e,
 		]);
@@ -358,7 +363,7 @@ class MailOutbox {
 			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
 			->andWhere($qb->expr()->eq('lease_token', $qb->createNamedParameter($token)));
 		if ($qb->executeStatement() === 1) {
-			$this->schedule($id, $due);
+			$this->schedule($id, $due, $batch);
 		}
 	}
 
@@ -367,7 +372,7 @@ class MailOutbox {
 		$now = time();
 
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('id', 'attempts')->from(self::TABLE)
+		$qb->select('id', 'attempts', 'batch_key')->from(self::TABLE)
 			->where($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
 			->andWhere($qb->expr()->lte('lease_until', $qb->createNamedParameter($now)))
 			->setMaxResults(100);
@@ -394,12 +399,12 @@ class MailOutbox {
 				->andWhere($update->expr()->eq('status', $update->createNamedParameter('sending')))
 				->andWhere($update->expr()->lte('lease_until', $update->createNamedParameter($now)));
 			if ($update->executeStatement() === 1) {
-				$this->schedule($id, $due);
+				$this->schedule($id, $due, !empty($row['batch_key']));
 			}
 		}
 
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('id')->from(self::TABLE)
+		$qb->select('id', 'batch_key')->from(self::TABLE)
 			->where($qb->expr()->eq('status', $qb->createNamedParameter('pending')))
 			->andWhere($qb->expr()->lte('next_attempt_at', $qb->createNamedParameter($now)))
 			->setMaxResults(100);
@@ -407,7 +412,7 @@ class MailOutbox {
 		$dueRows = $result->fetchAll();
 		$result->closeCursor();
 		foreach ($dueRows as $row) {
-			$this->schedule((int)$row['id'], $now);
+			$this->schedule((int)$row['id'], $now, !empty($row['batch_key']));
 		}
 
 		$qb = $this->db->getQueryBuilder();
@@ -427,6 +432,7 @@ class MailOutbox {
 			->set('subject', $qb->createNamedParameter(''))
 			->set('body_text', $qb->createNamedParameter(''))
 			->set('body_html', $qb->createNamedParameter(''))
+			->set('item_name', $qb->createNamedParameter(''))
 			->set('completed_at', $qb->createNamedParameter($now))
 			->set('updated_at', $qb->createNamedParameter($now))
 			->set('lease_until', $qb->createNamedParameter(0))
