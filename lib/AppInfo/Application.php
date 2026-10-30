@@ -8,6 +8,7 @@ use OCA\Abonnieren\BackgroundJob\ReconcileOutboxJob;
 use OCA\Abonnieren\Listeners\DownloadNotificationListener;
 use OCA\Abonnieren\Listeners\FileUploadListener;
 use OCA\Abonnieren\Listeners\LoadAdditionalScriptsListener;
+use OCA\Abonnieren\Notification\Notifier;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\App\IAppManager;
 use OCP\BackgroundJob\IJobList;
@@ -33,6 +34,7 @@ class Application extends App implements IBootstrap {
 	}
 
 	public function register(IRegistrationContext $context): void {
+		$context->registerNotifierService(Notifier::class);
 		foreach ([NodeCreatedEvent::class, NodeDeletedEvent::class, NodeWrittenEvent::class] as $event) {
 			$context->registerEventListener($event, FileUploadListener::class);
 		}
