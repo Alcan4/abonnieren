@@ -149,4 +149,39 @@ class SubscriptionPolicyTest extends TestCase {
 			$this->file('document.pdf'), SubscriptionService::EVENT_MODIFICATION));
 	}
 
+	private function nestedFile(string $directory): File {
+		$top = $this->createMock(Folder::class);
+		$top->method('getId')->willReturn(10);
+		$top->method('getName')->willReturn('Subscribed');
+		$top->method('getParent')->willThrowException(new \RuntimeException('End of hierarchy'));
+		$subdir = $this->createMock(Folder::class);
+		$subdir->method('getId')->willReturn(15);
+		$subdir->method('getName')->willReturn($directory);
+		$subdir->method('getParent')->willReturn($top);
+		$file = $this->createMock(File::class);
+		$file->method('getId')->willReturn(20);
+		$file->method('getName')->willReturn('report.pdf');
+		$file->method('getParent')->willReturn($subdir);
+		return $file;
+	}
+
+	public function testFolderExclusionFiltersDescendantsButNotSimilarlyNamedFolders(): void {
+		$parent = $this->row('alice', 10, 0);
+		$parent['excluded_folders'] = 'Archive';
+		$service = $this->service([$parent]);
+		self::assertSame([], $service->getRecipientPoliciesForNode(
+			$this->nestedFile('Archive'), SubscriptionService::EVENT_MODIFICATION));
+		self::assertArrayHasKey('alice', $service->getRecipientPoliciesForNode(
+			$this->nestedFile('Archive2'), SubscriptionService::EVENT_MODIFICATION));
+	}
+
+	public function testCloserSubscriptionCanOverrideAnAncestorExclusion(): void {
+		$parent = $this->row('alice', 10, 0);
+		$parent['excluded_folders'] = 'Archive';
+		$child = $this->row('alice', 15, 0);
+		$service = $this->service([$parent, $child]);
+		self::assertArrayHasKey('alice', $service->getRecipientPoliciesForNode(
+			$this->nestedFile('Archive'), SubscriptionService::EVENT_MODIFICATION));
+	}
+
 }
