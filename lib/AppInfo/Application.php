@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace OCA\Abonnieren\AppInfo;
 
+use OCA\Abonnieren\BackgroundJob\ReconcileOutboxJob;
 use OCA\Abonnieren\Listeners\DownloadNotificationListener;
 use OCA\Abonnieren\Listeners\FileUploadListener;
 use OCA\Abonnieren\Listeners\LoadAdditionalScriptsListener;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\App\IAppManager;
+use OCP\BackgroundJob\IJobList;
 use OCP\AppFramework\App;
 use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IBootstrap;
@@ -55,5 +57,9 @@ class Application extends App implements IBootstrap {
 	}
 
 	public function boot(IBootContext $context): void {
+		$jobs = $context->getServerContainer()->get(IJobList::class);
+		if (!$jobs->has(ReconcileOutboxJob::class, null)) {
+			$jobs->add(ReconcileOutboxJob::class);
+		}
 	}
 }
