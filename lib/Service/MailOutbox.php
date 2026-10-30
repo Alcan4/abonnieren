@@ -154,6 +154,15 @@ class MailOutbox {
 			$this->retry($id, $token, (int)$row['attempts'], new \RuntimeException('Batch row routed to regular delivery job'), true);
 			return;
 		}
+		// Quiet hours can begin while a message is waiting for a worker.
+		// Recheck after the atomic claim so we never send in the quiet window.
+		$quietDue = EmailSchedule::dueAt(time(),
+			(string)($row['quiet_start'] ?? ''), (string)($row['quiet_end'] ?? ''),
+			(string)($row['quiet_timezone'] ?? 'UTC'));
+		if ($quietDue > time()) {
+			$this->deferClaimedForQuietHours($id, $token, $quietDue);
+			return;
+		}
 		$attempts = (int)$row['attempts'];
 		$userId = (string)$row['user_id'];
 		$deleted = (bool)$row['deleted'];
@@ -320,6 +329,24 @@ class MailOutbox {
 			foreach ($valid as $row) {
 				$this->retry((int)$row['id'], $token, (int)$row['attempts'], $e, true);
 			}
+		}
+	}
+
+	/** Does not spend an SMTP attempt when delivery is postponed for quiet hours. */
+	private function deferClaimedForQuietHours(int $id, string $token, int $due): void {
+		$qb = $this->db->getQueryBuilder();
+		$qb->update(self::TABLE)
+			->set('status', $qb->createNamedParameter('pending'))
+			->set('attempts', 'attempts - 1')
+			->set('next_attempt_at', $qb->createNamedParameter($due))
+			->set('lease_token', $qb->createNamedParameter(null))
+			->set('lease_until', $qb->createNamedParameter(0))
+			->set('updated_at', $qb->createNamedParameter(time()))
+			->where($qb->expr()->eq('id', $qb->createNamedParameter($id)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
+			->andWhere($qb->expr()->eq('lease_token', $qb->createNamedParameter($token)));
+		if ($qb->executeStatement() === 1) {
+			$this->schedule($id, $due);
 		}
 	}
 
