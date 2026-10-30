@@ -1,0 +1,90 @@
+name: SMTP capture (Nextcloud 35)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mailpit:
+    name: Real SMTP capture
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mailpit:
+        image: axllent/mailpit:v1.25.0
+        ports:
+          - 1025:1025
+          - 8025:8025
+
+    steps:
+      - name: Checkout Nextcloud 35
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          submodules: true
+          repository: nextcloud/server
+          ref: stable35
+
+      - name: Checkout Abonnieren
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          path: apps/abonnieren
+
+      - name: Set up PHP 8.3
+        uses: shivammathur/setup-php@ccf2c627fe61b1b4d924adfcbd19d661a18133a0 # v2.35.2
+        with:
+          php-version: '8.3'
+          extensions: bz2, ctype, curl, dom, fileinfo, gd, iconv, intl, mbstring, openssl, pdo_sqlite, sqlite3, xml, xmlreader, xmlwriter, zip
+          coverage: none
+          ini-file: development
+          ini-values: disable_functions=
+
+      - name: Set up disposable Nextcloud and local SMTP sink
+        run: |
+          mkdir -p data
+          php occ maintenance:install --database=sqlite --admin-user=admin --admin-pass=admin
+          php occ app:enable abonnieren
+          php occ config:system:set mail_smtpmode --value=smtp
+          php occ config:system:set mail_smtphost --value=127.0.0.1
+          php occ config:system:set mail_smtpport --type=integer --value=1025
+          php occ config:system:set mail_smtpauth --type=boolean --value=false
+          php occ config:system:set mail_smtpsecure --value=''
+          php occ config:system:set mail_from_address --value=abonnieren
+          php occ config:system:set mail_domain --value=example.test
+          php occ background:cron
+          curl --fail --silent --show-error http://127.0.0.1:8025/api/v1/messages >/dev/null
+
+      - name: Send real queued subscription email through Nextcloud SMTP
+        run: |
+          marker="/tmp/abo-smtp-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$$.json"
+          trap 'rm -f "$marker"' EXIT
+          php apps/abonnieren/tests/Integration/smtp_capture_smoke.php seed "$marker"
+          php occ background-job:worker --once 'OCA\Abonnieren\BackgroundJob\DeliverMailJob'
+          php apps/abonnieren/tests/Integration/smtp_capture_smoke.php verify "$marker"
+
+      - name: Confirm Mailpit received one synthetic SMTP message
+        run: |
+          curl --fail --silent --show-error http://127.0.0.1:8025/api/v1/messages \
+            | php -r '
+              $data = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
+              $messages = $data["messages"] ?? [];
+              if (count($messages) !== 1) {
+                throw new \RuntimeException("Expected one captured mail; got " . count($messages));
+              }
+              $message = $messages[0];
+              if (!str_contains((string)($message["Subject"] ?? ""), "Abonnieren SMTP capture")) {
+                throw new \RuntimeException("Captured mail subject does not match test message");
+              }
+              echo "PASS: Mailpit received one real SMTP message from Abonnieren\n";
+            '
+
+      - name: Show synthetic Nextcloud log on failure
+        if: failure()
+        run: |
+          if test -f data/nextcloud.log; then
+            tail -n 50 data/nextcloud.log
+          fi
