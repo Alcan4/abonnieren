@@ -11,6 +11,7 @@ use OCA\Abonnieren\Service\RecipientMailDispatcher;
 use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Notification\NotificationPublisher;
 use OCA\Abonnieren\Service\ShareContextResolver;
+use OCA\Abonnieren\Service\RecipientVisiblePath;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
 use OCP\EventDispatcher\Event;
@@ -48,6 +49,7 @@ class DownloadNotificationListener implements IEventListener {
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
 		private NotificationPublisher $nativePublisher,
+		private RecipientVisiblePath $recipientVisiblePath,
 		private RecipientMailDispatcher $mailDispatcher,
 		ICacheFactory $cacheFactory,
 	) {
@@ -177,12 +179,13 @@ class DownloadNotificationListener implements IEventListener {
 		try {
 			$isFolder = $node instanceof Folder;
 			$isPublicLink = $this->shareResolver->isPublicShare($share);
-			$path = $this->getUserRelativePath($subscriptionNode);
+
 
 			$emailQueued = $this->mailDispatcher->deliver(
 				$emailRecipients,
-				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink, $path, $policies): void {
+				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink, $policies): void {
 					$l10n = $this->recipientL10n->forUser($userId);
+					$recipientPath = $this->recipientVisiblePath->pathFor($userId, $subscriptionNode);
 					$subject = $isFolder
 						? ($isPublicLink
 							? $l10n->t('Public share folder downloaded')
@@ -204,7 +207,9 @@ class DownloadNotificationListener implements IEventListener {
 					$template->addHeading($subject);
 					$template->addBodyText($description);
 					$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
-					$template->addBodyListItem($l10n->t('Path:') . ' ' . $path);
+					if ($recipientPath !== null) {
+						$template->addBodyListItem($l10n->t('Path:') . ' ' . $recipientPath);
+					}
 					if ($node instanceof File) {
 						$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
 					}
@@ -214,16 +219,18 @@ class DownloadNotificationListener implements IEventListener {
 					// Never retain a public-share capability token in delayed SMTP
 					// jobs or email templates. The subscriber must open the file
 					// through their own authenticated Nextcloud access.
-					$template->addBodyButton(
-						$l10n->t('Open file'),
-						$this->urlGenerator->linkToRouteAbsolute(
-							'files.viewcontroller.showFile',
-							[
-								'dir' => $subscriptionNode instanceof Folder ? $path : dirname($path),
-								'fileid' => (string)$subscriptionNode->getId(),
-							],
-						),
-					);
+					if ($recipientPath !== null) {
+						$template->addBodyButton(
+							$l10n->t('Open file'),
+							$this->urlGenerator->linkToRouteAbsolute(
+								'files.viewcontroller.showFile',
+								[
+									'dir' => $subscriptionNode instanceof Folder ? $recipientPath : dirname($recipientPath),
+									'fileid' => (string)$subscriptionNode->getId(),
+								],
+							),
+						);
+					}
 					$template->addFooter();
 					$this->outbox->enqueue($userId, $subscriptionNode, SubscriptionService::EVENT_DOWNLOAD,
 						$actorUserId, false, $subject, $template->renderText(), $template->renderHtml(), $policies[$userId]);
