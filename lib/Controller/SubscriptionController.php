@@ -110,11 +110,13 @@ class SubscriptionController extends Controller {
 		$quietStart = (string)$this->request->getParam('quietStart', '');
 		$quietEnd = (string)$this->request->getParam('quietEnd', '');
 		$quietTimezone = (string)$this->request->getParam('quietTimezone', 'UTC');
+		$digestMode = (string)$this->request->getParam('digestMode', 'instant');
+		$digestTime = (string)$this->request->getParam('digestTime', '08:00');
 
 		try {
 			$this->subscriptionService->upsertRule($userId, $nodeId, $eventMask, $recursive,
 				(int)$debounceRaw, $excludedExtensions, (int)$channelsRaw,
-				$quietStart, $quietEnd, $quietTimezone);
+				$quietStart, $quietEnd, $quietTimezone, $digestMode, $digestTime);
 		} catch (\InvalidArgumentException $e) {
 			return new DataResponse(['success' => false, 'message' => $e->getMessage()], Http::STATUS_BAD_REQUEST);
 		}
