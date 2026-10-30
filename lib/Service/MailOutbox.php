@@ -57,7 +57,7 @@ class MailOutbox {
 		$due = DigestSchedule::dueAt($now, $digestMode, $digestTime,
 			$quiet['timezone'], $quiet['start'], $quiet['end']);
 		if ($digestMode !== DigestSchedule::INSTANT) {
-			$key = DigestSchedule::key($userId, $due);
+			$key = DigestSchedule::key($userId, $due, $quiet['start'], $quiet['end'], $quiet['timezone']);
 			$id = $this->insertRow($userId, $node, $parentId, $event, $actor, $deleted,
 				$subject, $text, $html, $now, $due, '', mb_substr($node->getName(), 0, 255),
 				$quiet, $key);
@@ -258,6 +258,25 @@ class MailOutbox {
 			return;
 		}
 		$key = (string)$leader[$groupColumn];
+		if ($digest) {
+			$quietDue = EmailSchedule::dueAt($now,
+				(string)($leader['quiet_start'] ?? ''), (string)($leader['quiet_end'] ?? ''),
+				(string)($leader['quiet_timezone'] ?? 'UTC'));
+			if ($quietDue > $now) {
+				// A retry may become due after a quiet period starts.
+				// Postpone the entire pending digest without consuming an attempt.
+				$delay = $this->db->getQueryBuilder();
+				$delay->update(self::TABLE)
+					->set('next_attempt_at', $delay->createNamedParameter($quietDue))
+					->where($delay->expr()->eq('digest_key', $delay->createNamedParameter($key)))
+					->andWhere($delay->expr()->eq('status', $delay->createNamedParameter('pending')))
+					->andWhere($delay->expr()->lte('next_attempt_at', $delay->createNamedParameter($now)));
+				if ($delay->executeStatement() > 0) {
+					$this->schedule($id, $quietDue, false, true);
+				}
+				return;
+			}
+		}
 
 		$qb = $this->db->getQueryBuilder();
 		$qb->select('id')->from(self::TABLE)
