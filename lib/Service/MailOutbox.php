@@ -237,27 +237,38 @@ class MailOutbox {
 	 * are generated to avoid disclosing revoked files.
 	 */
 	public function deliverUploadBatchById(int $id): void {
+		$this->deliverGroupedById($id, false);
+	}
+
+	public function deliverDigestById(int $id): void {
+		$this->deliverGroupedById($id, true);
+	}
+
+	private function deliverGroupedById(int $id, bool $digest): void {
 		if ($id < 1) {
 			return;
 		}
 		$now = time();
+		$groupColumn = $digest ? 'digest_key' : 'batch_key';
 		$leader = $this->find($id);
 		if ($leader === null || ($leader['status'] ?? '') !== 'pending'
-			|| (string)($leader['batch_key'] ?? '') === ''
-			|| (int)$leader['batch_until'] > $now
+			|| (string)($leader[$groupColumn] ?? '') === ''
+			|| (!$digest && (int)$leader['batch_until'] > $now)
 			|| (int)$leader['next_attempt_at'] > $now) {
 			return;
 		}
-		$key = (string)$leader['batch_key'];
+		$key = (string)$leader[$groupColumn];
 
 		$qb = $this->db->getQueryBuilder();
 		$qb->select('id')->from(self::TABLE)
-			->where($qb->expr()->eq('batch_key', $qb->createNamedParameter($key)))
+			->where($qb->expr()->eq($groupColumn, $qb->createNamedParameter($key)))
 			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('pending')))
-			->andWhere($qb->expr()->lte('batch_until', $qb->createNamedParameter($now)))
 			->andWhere($qb->expr()->lte('next_attempt_at', $qb->createNamedParameter($now)))
 			->orderBy('id', 'ASC')
-			->setMaxResults(UploadBatch::MAX_ITEMS_PER_EMAIL);
+			->setMaxResults($digest ? DigestSchedule::MAX_ITEMS_PER_EMAIL : UploadBatch::MAX_ITEMS_PER_EMAIL);
+		if (!$digest) {
+			$qb->andWhere($qb->expr()->lte('batch_until', $qb->createNamedParameter($now)));
+		}
 		$result = $qb->executeQuery();
 		$ids = array_map(static fn (array $row): int => (int)$row['id'], $result->fetchAll());
 		$result->closeCursor();
@@ -275,15 +286,17 @@ class MailOutbox {
 			->set('updated_at', $qb->createNamedParameter($now))
 			->where($qb->expr()->in('id', $qb->createNamedParameter($ids, IQueryBuilder::PARAM_INT_ARRAY)))
 			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('pending')))
-			->andWhere($qb->expr()->lte('batch_until', $qb->createNamedParameter($now)))
 			->andWhere($qb->expr()->lte('next_attempt_at', $qb->createNamedParameter($now)));
+		if (!$digest) {
+			$qb->andWhere($qb->expr()->lte('batch_until', $qb->createNamedParameter($now)));
+		}
 		if ($qb->executeStatement() < 1) {
 			return;
 		}
 
 		$qb = $this->db->getQueryBuilder();
 		$qb->select('*')->from(self::TABLE)
-			->where($qb->expr()->eq('batch_key', $qb->createNamedParameter($key)))
+			->where($qb->expr()->eq($groupColumn, $qb->createNamedParameter($key)))
 			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
 			->andWhere($qb->expr()->eq('lease_token', $qb->createNamedParameter($token)));
 		$result = $qb->executeQuery();
@@ -297,11 +310,13 @@ class MailOutbox {
 			$attempts = (int)$row['attempts'];
 			$userId = (string)$row['user_id'];
 			try {
-				$nodes = $this->rootFolder->getUserFolder($userId)->getById((int)$row['node_id']);
-				if ($nodes === [] || !isset($this->subscriptions->getRecipientEmailsForNode(
+				$deleted = (bool)$row['deleted'];
+				$accessId = $deleted ? (int)($row['parent_id'] ?? 0) : (int)$row['node_id'];
+				$nodes = $accessId > 0 ? $this->rootFolder->getUserFolder($userId)->getById($accessId) : [];
+				if ($nodes === [] || (!$deleted && !isset($this->subscriptions->getRecipientEmailsForNode(
 					$nodes[0], (int)$row['event_mask'],
 					is_string($row['actor_id']) ? $row['actor_id'] : null,
-				)[$userId])) {
+				)[$userId]))) {
 					$this->finish($rowId, $token, 'cancelled');
 					continue;
 				}
@@ -313,7 +328,7 @@ class MailOutbox {
 				$recipientEmail = $email;
 				$valid[] = $row;
 			} catch (\Throwable $e) {
-				$this->retry($rowId, $token, $attempts, $e, true);
+				$this->retry($rowId, $token, $attempts, $e, !$digest, $digest);
 			}
 		}
 		if ($valid === [] || $recipientEmail === null) {
@@ -325,7 +340,7 @@ class MailOutbox {
 			$text = (string)$valid[0]['body_text'];
 			$html = (string)$valid[0]['body_html'];
 		} else {
-			$summary = UploadBatch::message($valid);
+			$summary = $digest ? DigestSchedule::message($valid) : UploadBatch::message($valid);
 			$subject = $summary['subject'];
 			$text = $summary['text'];
 			$html = $summary['html'];
@@ -345,7 +360,7 @@ class MailOutbox {
 			}
 		} catch (\Throwable $e) {
 			foreach ($valid as $row) {
-				$this->retry((int)$row['id'], $token, (int)$row['attempts'], $e, true);
+				$this->retry((int)$row['id'], $token, (int)$row['attempts'], $e, !$digest, $digest);
 			}
 		}
 	}
