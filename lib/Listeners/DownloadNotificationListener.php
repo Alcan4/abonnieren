@@ -182,7 +182,7 @@ class DownloadNotificationListener implements IEventListener {
 
 			$emailQueued = $this->mailDispatcher->deliver(
 				$emailRecipients,
-				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink, $path, $token): void {
+				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink, $path, $token, $policies): void {
 					$l10n = $this->recipientL10n->forUser($userId);
 					$subject = $isFolder
 						? ($isPublicLink
@@ -236,7 +236,7 @@ class DownloadNotificationListener implements IEventListener {
 					}
 					$template->addFooter();
 					$this->outbox->enqueue($userId, $subscriptionNode, SubscriptionService::EVENT_DOWNLOAD,
-						$actorUserId, false, $subject, $template->renderText(), $template->renderHtml());
+						$actorUserId, false, $subject, $template->renderText(), $template->renderHtml(), $policies[$userId]);
 				},
 				'Could not queue download notification',
 				['shareId' => $share !== null ? (int)$share->getId() : null, 'nodeId' => (int)$node->getId()],
