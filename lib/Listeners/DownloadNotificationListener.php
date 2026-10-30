@@ -85,15 +85,10 @@ class DownloadNotificationListener implements IEventListener {
 		$actorUserId = $user?->getUID() ?? $this->resolveActorUserId();
 
 		$actorKey = $actorUserId ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
-		$cacheKey = implode(':', ['download', (string)$folder->getId(), $actorKey]);
-		if ($this->cache->get($cacheKey) === true) {
-			return;
-		}
+		$cacheKeyBase = implode(':', ['download', (string)$folder->getId(), $actorKey]);
 		$this->cache->set('request:' . $this->request->getId(), $folder->getPath(), SubscriptionService::DEBOUNCE_SECONDS);
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($folder, $share);
-		if ($this->notify($share, $folder, $subscriptionNode, $actorUserId)) {
-			$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
-		}
+		$this->notify($share, $folder, $subscriptionNode, $cacheKeyBase, $actorUserId);
 	}
 
 	private function handleFileDownload(BeforeNodeReadEvent $event): void {
@@ -116,14 +111,9 @@ class DownloadNotificationListener implements IEventListener {
 		}
 
 		$actorKey = $actorUserId ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
-		$cacheKey = implode(':', ['download', (string)$node->getId(), $actorKey]);
-		if ($this->cache->get($cacheKey) === true) {
-			return;
-		}
+		$cacheKeyBase = implode(':', ['download', (string)$node->getId(), $actorKey]);
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
-		if ($this->notify($share, $node, $subscriptionNode, $actorUserId)) {
-			$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
-		}
+		$this->notify($share, $node, $subscriptionNode, $cacheKeyBase, $actorUserId);
 	}
 
 	/**
@@ -151,22 +141,22 @@ class DownloadNotificationListener implements IEventListener {
 		return true;
 	}
 
-	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode, ?string $actorUserId = null): bool {
-		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
+	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode, string $cacheKeyBase, ?string $actorUserId = null): void {
+		$policies = $this->subscriptionService->getRecipientPoliciesForNode(
 			$subscriptionNode,
 			SubscriptionService::EVENT_DOWNLOAD,
 			$actorUserId ?? $this->userSession->getUser()?->getUID(),
 		);
-		if ($recipients === []) {
-			return true;
+		$recipients = [];
+		foreach ($policies as $userId => $policy) {
+			if ($policy['debounceSeconds'] > 0 && $this->cache->get($cacheKeyBase . ':' . $userId) === true) {
+				continue;
+			}
+			$recipients[$userId] = $policy['email'];
 		}
-
-		$this->activityPublisher->publishForRecipients(
-			Provider::SUBJECT_DOWNLOADED,
-			$subscriptionNode,
-			$actorUserId ?? $this->userSession->getUser()?->getUID(),
-			array_keys($recipients),
-		);
+		if ($recipients === []) {
+			return;
+		}
 
 		try {
 			$isFolder = $node instanceof Folder;
@@ -235,7 +225,18 @@ class DownloadNotificationListener implements IEventListener {
 				'Could not queue download notification',
 				['shareId' => $share !== null ? (int)$share->getId() : null, 'nodeId' => (int)$node->getId()],
 			);
-			return count($queuedUserIds) === count($recipients);
+			foreach ($queuedUserIds as $userId) {
+				$seconds = $policies[$userId]['debounceSeconds'];
+				if ($seconds > 0) {
+					$this->cache->set($cacheKeyBase . ':' . $userId, true, $seconds);
+				}
+			}
+			$this->activityPublisher->publishForRecipients(
+				Provider::SUBJECT_DOWNLOADED,
+				$subscriptionNode,
+				$actorUserId ?? $this->userSession->getUser()?->getUID(),
+				$queuedUserIds,
+			);
 		} catch (\Throwable $e) {
 			$this->logger->error('Could not queue download notification', [
 				'app' => 'abonnieren',
@@ -243,7 +244,6 @@ class DownloadNotificationListener implements IEventListener {
 				'nodeId' => (int)$node->getId(),
 				'exception' => $e,
 			]);
-			return false;
 		}
 	}
 
