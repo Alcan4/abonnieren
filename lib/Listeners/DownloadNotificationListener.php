@@ -24,6 +24,7 @@ use OCP\ICacheFactory;
 use OCP\IL10N;
 use OCP\IRequest;
 use OCP\IURLGenerator;
+use OCP\Mail\IMailer;
 use OCP\IUserSession;
 use OCP\Share\IShare;
 use Psr\Log\LoggerInterface;
@@ -36,6 +37,7 @@ class DownloadNotificationListener implements IEventListener {
 
 	public function __construct(
 		private MailOutbox $outbox,
+		private IMailer $mailer,
 		private RecipientL10N $recipientL10n,
 		private LoggerInterface $logger,
 		private SubscriptionService $subscriptionService,
