@@ -116,7 +116,7 @@ class FileUploadListener implements IEventListener {
 		// A failing SMTP enqueue never prevents an independent native notification.
 		$nativeSent = $this->nativePublisher->publishForRecipients($subscriptionNode, $eventBit, $nativeRecipients);
 		$emailQueued = $emailRecipients !== []
-			? $this->queueNotification($subscriptionNode, $emailRecipients, $eventName, $eventBit, $actorUserId, $isPublicLink)
+			? $this->queueNotification($subscriptionNode, $emailRecipients, $eventName, $eventBit, $actorUserId, $isPublicLink, $policies)
 			: [];
 		foreach ($emailQueued as $userId) {
 			$seconds = $policies[$userId]['debounceSeconds'];
@@ -149,14 +149,14 @@ class FileUploadListener implements IEventListener {
 
 	/** @param array<string, string> $recipients */
 	/** @return list<string> User IDs whose notification was persisted. */
-	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity): array {
+	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity, array $policies): array {
 		try {
 			$isFolder = $node instanceof Folder;
 			$path = $this->getUserRelativePath($node);
 
 			$queuedUserIds = $this->mailDispatcher->deliver(
 				$recipients,
-				function (string $userId, string $email) use ($node, $eventName, $eventBit, $actorUserId, $isFolder, $path, $publicLinkActivity): void {
+				function (string $userId, string $email) use ($node, $eventName, $eventBit, $actorUserId, $isFolder, $path, $publicLinkActivity, $policies): void {
 					$l10n = $this->recipientL10n->forUser($userId);
 					$subject = $this->getSubject($l10n, $isFolder, $eventName);
 					$description = $this->getDescription($l10n, $publicLinkActivity);
@@ -184,7 +184,7 @@ class FileUploadListener implements IEventListener {
 					}
 					$template->addFooter();
 					$this->outbox->enqueue($userId, $node, $eventBit, $actorUserId, $eventName === 'deleted',
-						$subject, $template->renderText(), $template->renderHtml());
+						$subject, $template->renderText(), $template->renderHtml(), $policies[$userId]);
 				},
 				'Could not queue file event notification',
 				['nodeId' => (int)$node->getId(), 'event' => $eventName],
