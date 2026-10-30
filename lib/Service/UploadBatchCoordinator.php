@@ -51,8 +51,12 @@ final class UploadBatchCoordinator {
 
 			$qb = $this->db->getQueryBuilder();
 			$qb->select('*')->from(self::SCOPES)
-				->where($qb->expr()->eq('scope_key', $qb->createNamedParameter($scopeKey)))
-				->forUpdate();
+				->where($qb->expr()->eq('scope_key', $qb->createNamedParameter($scopeKey)));
+			// SQLite does not support SELECT FOR UPDATE. The insert above takes
+			// SQLite's serialized writer lock inside this transaction instead.
+			if ($this->db->getDatabaseProvider() !== IDBConnection::PLATFORM_SQLITE) {
+				$qb->forUpdate();
+			}
 			$result = $qb->executeQuery();
 			$existing = $result->fetch();
 			$result->closeCursor();
