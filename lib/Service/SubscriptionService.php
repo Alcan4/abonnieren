@@ -29,12 +29,13 @@ class SubscriptionService {
 	) {
 	}
 
-	public function upsertRule(string $userId, int $nodeId, int $eventMask, bool $recursive, int $debounceSeconds = self::DEBOUNCE_SECONDS, string $excludedExtensions = '', int $channelMask = self::CHANNEL_EMAIL, string $quietStart = '', string $quietEnd = '', string $quietTimezone = 'UTC', string $digestMode = DigestSchedule::INSTANT, string $digestTime = '08:00'): void {
+	public function upsertRule(string $userId, int $nodeId, int $eventMask, bool $recursive, int $debounceSeconds = self::DEBOUNCE_SECONDS, string $excludedExtensions = '', int $channelMask = self::CHANNEL_EMAIL, string $quietStart = '', string $quietEnd = '', string $quietTimezone = 'UTC', string $digestMode = DigestSchedule::INSTANT, string $digestTime = '08:00', int $expiresAt = 0, int $snoozedUntil = 0): void {
 		$this->validateRule($userId, $nodeId, $eventMask, $channelMask);
 		$debounceSeconds = SubscriptionPreferences::validateDebounce($debounceSeconds);
 		$excludedExtensions = SubscriptionPreferences::normalizeExtensions($excludedExtensions);
 		$quiet = EmailSchedule::validate($quietStart, $quietEnd, $quietTimezone);
 		DigestSchedule::validate($digestMode, $digestTime);
+		$lifecycle = SubscriptionLifecycle::validate($expiresAt, $snoozedUntil, time());
 
 		$qb = $this->db->getQueryBuilder();
 		$qb->delete('abonnieren_object_rules')
@@ -58,6 +59,8 @@ class SubscriptionService {
 				'quiet_timezone' => $qb->createNamedParameter($quiet['timezone']),
 				'digest_mode' => $qb->createNamedParameter($digestMode),
 				'digest_time' => $qb->createNamedParameter($digestTime),
+				'expires_at' => $qb->createNamedParameter($lifecycle['expiresAt']),
+				'snoozed_until' => $qb->createNamedParameter($lifecycle['snoozedUntil']),
 				'created_at' => $qb->createNamedParameter($now),
 				'updated_at' => $qb->createNamedParameter($now),
 			]);
@@ -83,7 +86,7 @@ class SubscriptionService {
 
 	public function getRule(string $userId, int $nodeId): ?array {
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'created_at', 'updated_at')
+		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until', 'created_at', 'updated_at')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
 			->andWhere($qb->expr()->eq('node_id', $qb->createNamedParameter($nodeId)));
@@ -97,7 +100,7 @@ class SubscriptionService {
 
 	public function getRulesByUser(string $userId): array {
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'created_at', 'updated_at')
+		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until', 'created_at', 'updated_at')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
 			->orderBy('updated_at', 'DESC');
@@ -124,7 +127,7 @@ class SubscriptionService {
 	 * One winning rule per subscriber. The closest matching rule overrides
 	 * ancestor preferences, including when that rule excludes the extension.
 	 *
-	 * @return array<string,array{email:string,debounceSeconds:int,excludedExtensions:list<string>,channelMask:int,quietStart:string,quietEnd:string,quietTimezone:string,digestMode:string,digestTime:string}>
+	 * @return array<string,array{email:string,debounceSeconds:int,excludedExtensions:list<string>,channelMask:int,quietStart:string,quietEnd:string,quietTimezone:string,digestMode:string,digestTime:string,expiresAt:int,snoozedUntil:int}>
 	 */
 	public function getRecipientPoliciesForNode(Node $node, int $event, ?string $actorUserId = null): array {
 		if (($event & self::ALLOWED_EVENTS) !== $event || $event < 1) {
@@ -150,7 +153,7 @@ class SubscriptionService {
 		}
 
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time')
+		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->in(
 				'node_id',
@@ -160,12 +163,16 @@ class SubscriptionService {
 		$rows = $result->fetchAll();
 		$result->closeCursor();
 
+		$now = time();
 		$exactId = $nodeIds[0];
 		$directParentId = $nodeIds[1] ?? null;
 		$selected = [];
 		foreach ($rows as $row) {
 			$userId = (string)$row['user_id'];
 			$ruleNodeId = (int)$row['node_id'];
+			if (SubscriptionLifecycle::expired((int)($row['expires_at'] ?? 0), $now)) {
+				continue;
+			}
 			$matchesScope = $ruleNodeId === $exactId
 				|| $ruleNodeId === $directParentId
 				|| ((bool)$row['recursive'] && in_array($ruleNodeId, $nodeIds, true));
@@ -206,6 +213,8 @@ class SubscriptionService {
 				'quietTimezone' => (string)($row['quiet_timezone'] ?? 'UTC'),
 				'digestMode' => (string)($row['digest_mode'] ?? DigestSchedule::INSTANT),
 				'digestTime' => (string)($row['digest_time'] ?? '08:00'),
+				'expiresAt' => (int)($row['expires_at'] ?? 0),
+				'snoozedUntil' => (int)($row['snoozed_until'] ?? 0),
 				'debounceSeconds' => (int)$row['debounce_seconds'],
 				'excludedExtensions' => SubscriptionPreferences::parseExtensions((string)$row['excluded_extensions']),
 				'distance' => $distance,
@@ -214,6 +223,9 @@ class SubscriptionService {
 
 		$recipients = [];
 		foreach ($selected as $userId => $settings) {
+			if (SubscriptionLifecycle::snoozed($settings['snoozedUntil'], $now)) {
+				continue;
+			}
 			if (SubscriptionPreferences::isExcluded($node, $settings['excludedExtensions'])) {
 				continue;
 			}
@@ -254,6 +266,10 @@ class SubscriptionService {
 			'quietTimezone' => (string)($row['quiet_timezone'] ?? 'UTC'),
 			'digestMode' => (string)($row['digest_mode'] ?? DigestSchedule::INSTANT),
 			'digestTime' => (string)($row['digest_time'] ?? '08:00'),
+			'expiresAt' => (int)($row['expires_at'] ?? 0),
+			'snoozedUntil' => (int)($row['snoozed_until'] ?? 0),
+			'isExpired' => SubscriptionLifecycle::expired((int)($row['expires_at'] ?? 0), time()),
+			'isSnoozed' => SubscriptionLifecycle::snoozed((int)($row['snoozed_until'] ?? 0), time()),
 			'createdAt' => (int)$row['created_at'],
 			'updatedAt' => (int)$row['updated_at'],
 		];
