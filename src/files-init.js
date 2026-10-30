@@ -94,7 +94,7 @@ class SubscriptionTab extends HTMLElement {
 		heading.textContent = t('abonnieren', 'Notifications for this object')
 		const description = document.createElement('p')
 		description.className = 'abonnieren-subscription-description'
-		description.textContent = t('abonnieren', 'Select the events for which you want to receive an email.')
+		description.textContent = t('abonnieren', 'Select the events and notification methods for this subscription.')
 		container.append(heading, description)
 
 		const eventMask = Number(rule?.eventMask || 0)
@@ -123,6 +123,24 @@ class SubscriptionTab extends HTMLElement {
 			label.append(recursive, document.createTextNode(t('abonnieren', 'Include subfolders')))
 			container.append(separator, label)
 		}
+
+		const channelTitle = document.createElement('h4')
+		channelTitle.className = 'abonnieren-preferences-title'
+		channelTitle.textContent = t('abonnieren', 'Delivery methods')
+		const channelMask = Number(rule?.channelMask ?? 1)
+		const emailLabel = document.createElement('label')
+		emailLabel.className = 'abonnieren-subscription-option'
+		const emailChannel = document.createElement('input')
+		emailChannel.type = 'checkbox'
+		emailChannel.checked = (channelMask & 1) !== 0
+		emailLabel.append(emailChannel, document.createTextNode(t('abonnieren', 'Email')))
+		const pushLabel = document.createElement('label')
+		pushLabel.className = 'abonnieren-subscription-option'
+		const nativeChannel = document.createElement('input')
+		nativeChannel.type = 'checkbox'
+		nativeChannel.checked = (channelMask & 2) !== 0
+		pushLabel.append(nativeChannel, document.createTextNode(t('abonnieren', 'Nextcloud notifications (including supported push clients)')))
+		container.append(channelTitle, emailLabel, pushLabel)
 
 		const settingsTitle = document.createElement('h4')
 		settingsTitle.className = 'abonnieren-preferences-title'
@@ -182,6 +200,7 @@ class SubscriptionTab extends HTMLElement {
 			this.saveRule(mask, Boolean(recursive?.checked), save, null, feedback, {
 				debounceSeconds: Number(delay.value),
 				excludedExtensions: extensions.value,
+				channelMask: Number(emailChannel.checked) + 2 * Number(nativeChannel.checked),
 			})
 		})
 		this.replaceChildren(container)
