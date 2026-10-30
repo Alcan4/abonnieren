@@ -35,7 +35,7 @@ class MailOutbox {
 	) {
 	}
 
-	public function enqueue(string $userId, Node $node, int $event, ?string $actor, bool $deleted, string $subject, string $text, string $html): void {
+	public function enqueue(string $userId, Node $node, int $event, ?string $actor, bool $deleted, string $subject, string $text, string $html, array $quietHours = []): void {
 		$parentId = null;
 		if ($deleted) {
 			try {
@@ -45,8 +45,16 @@ class MailOutbox {
 			}
 		}
 
+		$quiet = EmailSchedule::validate(
+			(string)($quietHours['quietStart'] ?? ''),
+			(string)($quietHours['quietEnd'] ?? ''),
+			(string)($quietHours['quietTimezone'] ?? 'UTC'),
+		);
 		$now = time();
-		if ($event === SubscriptionService::EVENT_UPLOAD && $node instanceof File && $actor !== null && $actor !== '') {
+		$quietDue = EmailSchedule::dueAt($now, $quiet['start'], $quiet['end'], $quiet['timezone']);
+		// Quiet-hour notifications are held individually to prevent separate
+		// subscription policies from leaking into the same upload summary.
+		if ($quiet['start'] === '' && $event === SubscriptionService::EVENT_UPLOAD && $node instanceof File && $actor !== null && $actor !== '') {
 			try {
 				$folderId = (int)$node->getParent()->getId();
 				if ($folderId > 0) {
@@ -68,13 +76,13 @@ class MailOutbox {
 		}
 
 		$id = $this->insertRow($userId, $node, $parentId, $event, $actor, $deleted,
-			$subject, $text, $html, $now, $now, '', '');
-		$this->schedule($id, $now);
+			$subject, $text, $html, $now, $quietDue, '', '', $quiet);
+		$this->schedule($id, $quietDue);
 	}
 
 	private function insertRow(
 		string $userId, Node $node, ?int $parentId, int $event, ?string $actor, bool $deleted,
-		string $subject, string $text, string $html, int $now, int $due, string $batchKey, string $itemName,
+		string $subject, string $text, string $html, int $now, int $due, string $batchKey, string $itemName, array $quiet = [],
 	): int {
 		$qb = $this->db->getQueryBuilder();
 		$qb->insert(self::TABLE)->values([
@@ -97,6 +105,9 @@ class MailOutbox {
 			'batch_key' => $qb->createNamedParameter($batchKey),
 			'batch_until' => $qb->createNamedParameter($batchKey !== '' ? $due : 0),
 			'item_name' => $qb->createNamedParameter($itemName),
+			'quiet_start' => $qb->createNamedParameter($quiet['start'] ?? ''),
+			'quiet_end' => $qb->createNamedParameter($quiet['end'] ?? ''),
+			'quiet_timezone' => $qb->createNamedParameter($quiet['timezone'] ?? 'UTC'),
 		]);
 		$qb->executeStatement();
 		return $this->db->lastInsertId(self::TABLE);
