@@ -58,6 +58,7 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
+          fetch-depth: 0
           path: apps/abonnieren
 
       - name: Set up PHP 8.3 and SQL drivers
@@ -69,16 +70,10 @@ jobs:
           ini-file: development
           ini-values: disable_functions=
 
-      - name: Install app test dependencies
-        working-directory: apps/abonnieren
+      - name: Install the original app 1.1.2 and seed a subscription
         run: |
-          php -r '$file = "composer.json"; $json = json_decode(file_get_contents($file), true, 512, JSON_THROW_ON_ERROR); unset($json["authors"][0]["homepage"]); file_put_contents($file, json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");'
-          composer config platform.php 8.3.36
-          composer remove nextcloud/ocp --dev --no-scripts --no-interaction
-          composer install --prefer-dist --no-interaction
-
-      - name: Install temporary Nextcloud
-        run: |
+          git -C apps/abonnieren rev-parse HEAD > /tmp/new-abonnieren-revision
+          git -C apps/abonnieren checkout --detach origin/main
           mkdir -p data
           php occ maintenance:install \
             --database="${{ matrix.driver }}" \
@@ -89,8 +84,58 @@ jobs:
             --admin-user=admin \
             --admin-pass=admin-test-only
           php occ app:enable abonnieren
-          php occ status
-          php occ config:system:get dbtype
+          php -r '
+            require "lib/base.php";
+            $db = \OC::$server->get(\OCP\IDBConnection::class);
+            $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
+            if (($versions["abonnieren"] ?? null) !== "1.1.2") {
+              throw new \RuntimeException("Legacy app version incorrect");
+            }
+            $q = $db->getQueryBuilder();
+            $q->insert("abonnieren_object_rules")->values([
+              "user_id" => $q->createNamedParameter("ci_legacy"),
+              "node_id" => $q->createNamedParameter(991234),
+              "event_mask" => $q->createNamedParameter(2),
+              "recursive" => $q->createNamedParameter(1),
+              "created_at" => $q->createNamedParameter(time()),
+              "updated_at" => $q->createNamedParameter(time()),
+            ]);
+            $q->executeStatement();
+          '
+
+      - name: Upgrade app to the checked-out development revision
+        run: |
+          git -C apps/abonnieren checkout --detach "$(cat /tmp/new-abonnieren-revision)"
+          php occ upgrade --no-interaction
+          php -r '
+            require "lib/base.php";
+            $db = \OC::$server->get(\OCP\IDBConnection::class);
+            $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
+            if (($versions["abonnieren"] ?? null) !== "1.1.12") {
+              throw new \RuntimeException("App did not upgrade to 1.1.12");
+            }
+            $q = $db->getQueryBuilder();
+            $q->select("*")->from("abonnieren_object_rules")
+              ->where($q->expr()->eq("user_id", $q->createNamedParameter("ci_legacy")));
+            $res = $q->executeQuery();
+            $row = $res->fetch();
+            $res->closeCursor();
+            if (!is_array($row) || (int)$row["node_id"] !== 991234
+              || (int)$row["channel_mask"] !== 1
+              || (int)$row["expires_at"] !== 0
+              || (string)($row["excluded_folders"] ?? "") !== "") {
+              throw new \RuntimeException("Legacy subscription was damaged by upgrade");
+            }
+            echo "Database upgrade and original subscription verified\n";
+          '
+
+      - name: Install app test dependencies
+        working-directory: apps/abonnieren
+        run: |
+          php -r '$file = "composer.json"; $json = json_decode(file_get_contents($file), true, 512, JSON_THROW_ON_ERROR); unset($json["authors"][0]["homepage"]); file_put_contents($file, json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");'
+          composer config platform.php 8.3.36
+          composer remove nextcloud/ocp --dev --no-scripts --no-interaction
+          composer install --prefer-dist --no-interaction
 
       - name: Run full PHPUnit including real database integration
         working-directory: apps/abonnieren
