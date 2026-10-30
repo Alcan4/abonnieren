@@ -305,6 +305,14 @@ final class InstalledDatabaseTest extends TestCase {
 	 * Do not send the cached deleted filename after the user unsubscribes.
 	 */
 	public function testQueuedDeletionCancelsAfterParentSubscriptionIsRemoved(): void {
+		$this->assertQueuedDeletionCanceledAfterAncestorChange(false);
+	}
+
+	public function testQueuedDeletionCancelsAfterAncestorSubscriptionPreferencesChange(): void {
+		$this->assertQueuedDeletionCanceledAfterAncestorChange(true);
+	}
+
+	private function assertQueuedDeletionCanceledAfterAncestorChange(bool $changePolicy): void {
 		$parentId = 7800000 + random_int(1, 100000);
 		$nodeId = $parentId + 1;
 		$parent = $this->createMock(Folder::class);
@@ -344,7 +352,15 @@ final class InstalledDatabaseTest extends TestCase {
 		$row = $this->row('abonnieren_mail_outbox', 'user_id', $this->uid);
 		self::assertSame($parentId, (int)$row['source_rule_id']);
 
-		$subscriptions->deleteRule($this->uid, $parentId);
+		if ($changePolicy) {
+			// A new exclusion or debounce setting invalidates the original
+			// authorization, even if the event mask and parent access remain.
+			$subscriptions->upsertRule($this->uid, $parentId,
+				SubscriptionService::EVENT_DELETION, true, 15, '', 1, '', '', 'UTC',
+				'instant', '08:00', 0, 0, 'Archive');
+		} else {
+			$subscriptions->deleteRule($this->uid, $parentId);
+		}
 		$outbox->deliverById((int)$row['id']);
 		$done = $this->row('abonnieren_mail_outbox', 'id', (int)$row['id']);
 		self::assertSame('cancelled', $done['status']);
