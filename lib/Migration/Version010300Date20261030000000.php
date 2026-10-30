@@ -22,7 +22,7 @@ class Version010300Date20261030000000 extends SimpleMigrationStep {
 			$table->addColumn('debounce_seconds', 'integer', ['notnull' => true, 'default' => 600]);
 		}
 		if (!$table->hasColumn('excluded_extensions')) {
-			$table->addColumn('excluded_extensions', 'text', ['notnull' => true, 'default' => '']);
+			$table->addColumn('excluded_extensions', 'string', ['length' => 512, 'notnull' => true, 'default' => '']);
 		}
 		return $schema;
 	}
