@@ -25,14 +25,29 @@ final class UploadBatchCoordinator {
 		$scopeKey = UploadBatch::scopeKey($recipient, $actor, $parentId);
 		$this->db->beginTransaction();
 		try {
-			$this->db->insertIfNotExist(self::SCOPES, [
-				'scope_key' => $scopeKey,
-				'batch_key' => '',
-				'started_at' => 0,
-				'last_at' => 0,
-				'due_at' => 0,
-				'item_count' => 0,
-			], ['scope_key']);
+			// Use Nextcloud's query builder so the configured DB table prefix
+			// is applied. IDBConnection::insertIfNotExist() works on raw table
+			// names and would otherwise target a missing unprefixed table.
+			try {
+				$insert = $this->db->getQueryBuilder();
+				$insert->insert(self::SCOPES)->values([
+					'scope_key' => $insert->createNamedParameter($scopeKey),
+					'batch_key' => $insert->createNamedParameter(''),
+					'started_at' => $insert->createNamedParameter(0),
+					'last_at' => $insert->createNamedParameter(0),
+					'due_at' => $insert->createNamedParameter(0),
+					'item_count' => $insert->createNamedParameter(0),
+				]);
+				$insert->executeStatement();
+			} catch (\OCP\DB\Exception $e) {
+				// A simultaneous uploader may have already created the scope.
+				if (!in_array($e->getReason(), [
+					\OCP\DB\Exception::REASON_CONSTRAINT_VIOLATION,
+					\OCP\DB\Exception::REASON_UNIQUE_CONSTRAINT_VIOLATION,
+				], true)) {
+					throw $e;
+				}
+			}
 
 			$qb = $this->db->getQueryBuilder();
 			$qb->select('*')->from(self::SCOPES)
