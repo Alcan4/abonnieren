@@ -19,7 +19,7 @@ class Version010900Date20261030000000 extends SimpleMigrationStep {
 		}
 		$table = $schema->getTable('abonnieren_object_rules');
 		if (!$table->hasColumn('excluded_folders')) {
-			$table->addColumn('excluded_folders', 'string', ['length' => 1024, 'notnull' => true, 'default' => '']);
+			$table->addColumn('excluded_folders', 'string', ['length' => 1024, 'notnull' => false, 'default' => null]);
 		}
 		return $schema;
 	}

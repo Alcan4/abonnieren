@@ -19,13 +19,13 @@ class Version010500Date20261030000000 extends SimpleMigrationStep {
 		}
 		$table = $schema->getTable('abonnieren_mail_outbox');
 		if (!$table->hasColumn('batch_key')) {
-			$table->addColumn('batch_key', 'string', ['length' => 64, 'notnull' => true, 'default' => '']);
+			$table->addColumn('batch_key', 'string', ['length' => 64, 'notnull' => false, 'default' => null]);
 		}
 		if (!$table->hasColumn('batch_until')) {
 			$table->addColumn('batch_until', 'bigint', ['notnull' => true, 'default' => 0]);
 		}
 		if (!$table->hasColumn('item_name')) {
-			$table->addColumn('item_name', 'string', ['length' => 255, 'notnull' => true, 'default' => '']);
+			$table->addColumn('item_name', 'string', ['length' => 255, 'notnull' => false, 'default' => null]);
 		}
 		if (!$table->hasIndex('abonnieren_batch_idx')) {
 			$table->addIndex(['batch_key', 'status', 'next_attempt_at'], 'abonnieren_batch_idx');
@@ -35,7 +35,7 @@ class Version010500Date20261030000000 extends SimpleMigrationStep {
 		if (!$schema->hasTable('abonnieren_upload_scopes')) {
 			$scope = $schema->createTable('abonnieren_upload_scopes');
 			$scope->addColumn('scope_key', 'string', ['length' => 64, 'notnull' => true]);
-			$scope->addColumn('batch_key', 'string', ['length' => 64, 'notnull' => true, 'default' => '']);
+			$scope->addColumn('batch_key', 'string', ['length' => 64, 'notnull' => false, 'default' => null]);
 			$scope->addColumn('started_at', 'bigint', ['notnull' => true, 'default' => 0]);
 			$scope->addColumn('last_at', 'bigint', ['notnull' => true, 'default' => 0]);
 			$scope->addColumn('due_at', 'bigint', ['notnull' => true, 'default' => 0]);
