@@ -207,4 +207,97 @@ final class InstalledDatabaseTest extends TestCase {
 				$q->createNamedParameter(\OCA\Abonnieren\Service\UploadBatch::scopeKey($this->uid, 'editor', $folderId))));
 		$q->executeStatement();
 	}
+	public function testRealDatabaseSmtpFailureIsRetriedWithoutImmediateRepeat(): void {
+		$nodeId = 7500000 + random_int(1, 100000);
+		$node = $this->createMock(File::class);
+		$node->method('getId')->willReturn($nodeId);
+		$jobs = $this->createMock(IJobList::class);
+		$jobs->expects($this->exactly(2))->method('scheduleAfter');
+		$folder = $this->createMock(Folder::class);
+		$folder->method('getById')->with($nodeId)->willReturn([$node]);
+		$root = $this->createMock(IRootFolder::class);
+		$root->method('getUserFolder')->with($this->uid)->willReturn($folder);
+		$user = $this->createMock(IUser::class);
+		$user->method('getEMailAddress')->willReturn('integration@example.test');
+		$users = $this->createMock(IUserManager::class);
+		$users->method('get')->with($this->uid)->willReturn($user);
+		$subscriptions = $this->createMock(SubscriptionService::class);
+		$subscriptions->method('getRecipientEmailsForNode')->willReturn([$this->uid => 'integration@example.test']);
+		$mailer = $this->createMock(IMailer::class);
+		$mailer->method('createMessage')->willReturn($this->createMock(IMessage::class));
+		$mailer->expects($this->once())->method('send')
+			->willThrowException(new \RuntimeException('Simulated SMTP failure'));
+		$logger = $this->createMock(LoggerInterface::class);
+		$logger->expects($this->once())->method('error');
+
+		$outbox = new MailOutbox($this->db, $jobs, $root, $users, $subscriptions, $mailer, $logger);
+		$outbox->enqueue($this->uid, $node, SubscriptionService::EVENT_MODIFICATION,
+			'editor', false, 'Modified', 'body', '<p>body</p>');
+		$row = $this->row('abonnieren_mail_outbox', 'user_id', $this->uid);
+		self::assertNotNull($row);
+		$outbox->deliverById((int)$row['id']);
+		$outbox->deliverById((int)$row['id']); // An old job cannot bypass the delay.
+		$retry = $this->row('abonnieren_mail_outbox', 'id', (int)$row['id']);
+		self::assertSame('pending', $retry['status']);
+		self::assertSame(1, (int)$retry['attempts']);
+		self::assertGreaterThan(time(), (int)$retry['next_attempt_at']);
+		self::assertSame('body', $retry['body_text']); // Needed for retry.
+	}
+
+	public function testRealDatabaseGroupedWorkerSendsOnlyOneSummary(): void {
+		$groupKey = bin2hex(random_bytes(32));
+		$now = time() - 3;
+		$ids = [];
+		foreach (['alpha.pdf', '<beta>.pdf'] as $name) {
+			$q = $this->db->getQueryBuilder();
+			$q->insert('abonnieren_mail_outbox')->values([
+				'user_id' => $q->createNamedParameter($this->uid),
+				'node_id' => $q->createNamedParameter(7600000 + count($ids)),
+				'event_mask' => $q->createNamedParameter(SubscriptionService::EVENT_UPLOAD),
+				'deleted' => $q->createNamedParameter(0),
+				'subject' => $q->createNamedParameter('File uploaded'),
+				'body_text' => $q->createNamedParameter('body'),
+				'body_html' => $q->createNamedParameter('<p>body</p>'),
+				'status' => $q->createNamedParameter('pending'),
+				'created_at' => $q->createNamedParameter($now - 100),
+				'updated_at' => $q->createNamedParameter($now),
+				'next_attempt_at' => $q->createNamedParameter($now),
+				'batch_key' => $q->createNamedParameter($groupKey),
+				'batch_until' => $q->createNamedParameter($now),
+				'item_name' => $q->createNamedParameter($name),
+			]);
+			$q->executeStatement();
+			$ids[] = $this->db->lastInsertId('abonnieren_mail_outbox');
+		}
+
+		$node = $this->createMock(File::class);
+		$folder = $this->createMock(Folder::class);
+		$folder->method('getById')->willReturn([$node]);
+		$root = $this->createMock(IRootFolder::class);
+		$root->method('getUserFolder')->with($this->uid)->willReturn($folder);
+		$user = $this->createMock(IUser::class);
+		$user->method('getEMailAddress')->willReturn('integration@example.test');
+		$users = $this->createMock(IUserManager::class);
+		$users->method('get')->with($this->uid)->willReturn($user);
+		$subscriptions = $this->createMock(SubscriptionService::class);
+		$subscriptions->method('getRecipientEmailsForNode')->willReturn([$this->uid => 'integration@example.test']);
+
+		$message = $this->createMock(IMessage::class);
+		$message->expects($this->once())->method('setSubject')->with('2 files uploaded to a subscribed folder');
+		$message->expects($this->once())->method('setHtmlBody')->with(self::stringContains('&lt;beta&gt;.pdf'));
+		$mailer = $this->createMock(IMailer::class);
+		$mailer->method('createMessage')->willReturn($message);
+		$mailer->expects($this->once())->method('send')->with($message)->willReturn([]);
+		$outbox = new MailOutbox($this->db, $this->createMock(IJobList::class),
+			$root, $users, $subscriptions, $mailer, $this->createMock(LoggerInterface::class));
+		$outbox->deliverUploadBatchById($ids[0]);
+		$outbox->deliverUploadBatchById($ids[1]);
+		foreach ($ids as $id) {
+			$row = $this->row('abonnieren_mail_outbox', 'id', $id);
+			self::assertSame('sent', $row['status']);
+			self::assertSame(1, (int)$row['attempts']);
+			self::assertSame('', $row['item_name']);
+		}
+	}
+
 }
