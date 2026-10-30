@@ -93,7 +93,7 @@ class MailOutbox {
 			$message = $this->mailer->createMessage();
 			$message->setTo([$email]);
 			$message->setSubject((string)$row['subject']);
-			$message->setBody((string)$row['body_text'], 'text/plain');
+			$message->setPlainBody((string)$row['body_text']);
 			$message->setHtmlBody((string)$row['body_html']);
 			$this->mailer->send($message);
 			$this->discard($id);
