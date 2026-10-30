@@ -90,7 +90,6 @@ class FileUploadListener implements IEventListener {
 		if ($this->cache->get($cacheKey) === true) {
 			return;
 		}
-		$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
 
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
 		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
@@ -99,7 +98,10 @@ class FileUploadListener implements IEventListener {
 			$actorUserId,
 		);
 		if ($recipients !== []) {
-			$this->queueNotification($subscriptionNode, $recipients, $eventName, $eventBit, $actorUserId, $isPublicLink);
+			$allQueued = $this->queueNotification($subscriptionNode, $recipients, $eventName, $eventBit, $actorUserId, $isPublicLink);
+			if ($allQueued) {
+				$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
+			}
 			$activitySubject = match ($eventName) {
 				'created' => Provider::SUBJECT_CREATED,
 				'deleted' => Provider::SUBJECT_DELETED,
@@ -119,12 +121,12 @@ class FileUploadListener implements IEventListener {
 	}
 
 	/** @param array<string, string> $recipients */
-	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity): void {
+	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity): bool {
 		try {
 			$isFolder = $node instanceof Folder;
 			$path = $this->getUserRelativePath($node);
 
-			$this->mailDispatcher->deliver(
+			$queuedUserIds = $this->mailDispatcher->deliver(
 				$recipients,
 				function (string $userId, string $email) use ($node, $eventName, $eventBit, $actorUserId, $isFolder, $path, $publicLinkActivity): void {
 					$l10n = $this->recipientL10n->forUser($userId);
@@ -159,6 +161,7 @@ class FileUploadListener implements IEventListener {
 				'Could not queue file event notification',
 				['nodeId' => (int)$node->getId(), 'event' => $eventName],
 			);
+			return count($queuedUserIds) === count($recipients);
 		} catch (\Throwable $e) {
 			$this->logger->error('Could not queue file event notification', [
 				'app' => 'abonnieren',
@@ -166,6 +169,7 @@ class FileUploadListener implements IEventListener {
 				'event' => $eventName,
 				'exception' => $e,
 			]);
+			return false;
 		}
 	}
 
