@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OCA\Abonnieren\Tests\Notification;
 
 use OCA\Abonnieren\Notification\NotificationPublisher;
+use OCA\Abonnieren\Service\RecipientVisiblePath;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Files\File;
 use OCP\IURLGenerator;
@@ -27,7 +28,9 @@ class NotificationPublisherTest extends TestCase {
 		$manager->expects($this->once())->method('notify')->with($notification);
 		$url = $this->createMock(IURLGenerator::class);
 		$url->method('linkToRoute')->willReturn('/apps/files/files/42');
-		$publisher = new NotificationPublisher($manager, $url, $this->createMock(LoggerInterface::class));
+		$paths = $this->createMock(RecipientVisiblePath::class);
+		$paths->method('pathFor')->with('subscriber', $node)->willReturn('/Shared/test.txt');
+		$publisher = new NotificationPublisher($manager, $url, $this->createMock(LoggerInterface::class), $paths);
 
 		self::assertSame(['subscriber'], $publisher->publishForRecipients(
 			$node, SubscriptionService::EVENT_MODIFICATION, ['subscriber', 'subscriber']));
@@ -51,7 +54,7 @@ class NotificationPublisherTest extends TestCase {
 		});
 		$logger = $this->createMock(LoggerInterface::class);
 		$logger->expects($this->once())->method('error');
-		$publisher = new NotificationPublisher($manager, $this->createMock(IURLGenerator::class), $logger);
+		$publisher = new NotificationPublisher($manager, $this->createMock(IURLGenerator::class), $logger, $this->createMock(RecipientVisiblePath::class));
 		self::assertSame(['second'], $publisher->publishForRecipients(
 			$node, SubscriptionService::EVENT_DELETION, ['first', 'second']));
 	}
