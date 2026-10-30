@@ -87,11 +87,11 @@ class DownloadNotificationListener implements IEventListener {
 		if ($this->cache->get($cacheKey) === true) {
 			return;
 		}
-		$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
-
 		$this->cache->set('request:' . $this->request->getId(), $folder->getPath(), SubscriptionService::DEBOUNCE_SECONDS);
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($folder, $share);
-		$this->notify($share, $folder, $subscriptionNode, $actorUserId);
+		if ($this->notify($share, $folder, $subscriptionNode, $actorUserId)) {
+			$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
+		}
 	}
 
 	private function handleFileDownload(BeforeNodeReadEvent $event): void {
@@ -118,10 +118,10 @@ class DownloadNotificationListener implements IEventListener {
 		if ($this->cache->get($cacheKey) === true) {
 			return;
 		}
-		$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
-
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
-		$this->notify($share, $node, $subscriptionNode, $actorUserId);
+		if ($this->notify($share, $node, $subscriptionNode, $actorUserId)) {
+			$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
+		}
 	}
 
 	/**
@@ -149,14 +149,14 @@ class DownloadNotificationListener implements IEventListener {
 		return true;
 	}
 
-	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode, ?string $actorUserId = null): void {
+	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode, ?string $actorUserId = null): bool {
 		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
 			$subscriptionNode,
 			SubscriptionService::EVENT_DOWNLOAD,
 			$actorUserId ?? $this->userSession->getUser()?->getUID(),
 		);
 		if ($recipients === []) {
-			return;
+			return true;
 		}
 
 		$this->activityPublisher->publishForRecipients(
@@ -172,7 +172,7 @@ class DownloadNotificationListener implements IEventListener {
 			$path = $this->getUserRelativePath($subscriptionNode);
 			$token = $share?->getToken();
 
-			$this->mailDispatcher->deliver(
+			$queuedUserIds = $this->mailDispatcher->deliver(
 				$recipients,
 				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink, $path, $token): void {
 					$l10n = $this->recipientL10n->forUser($userId);
@@ -233,6 +233,7 @@ class DownloadNotificationListener implements IEventListener {
 				'Could not queue download notification',
 				['shareId' => $share !== null ? (int)$share->getId() : null, 'nodeId' => (int)$node->getId()],
 			);
+			return count($queuedUserIds) === count($recipients);
 		} catch (\Throwable $e) {
 			$this->logger->error('Could not queue download notification', [
 				'app' => 'abonnieren',
@@ -240,6 +241,7 @@ class DownloadNotificationListener implements IEventListener {
 				'nodeId' => (int)$node->getId(),
 				'exception' => $e,
 			]);
+			return false;
 		}
 	}
 
