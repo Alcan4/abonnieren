@@ -114,4 +114,39 @@ class SubscriptionPolicyTest extends TestCase {
 		self::assertSame([], $service->getRecipientEmailsForNode($file, SubscriptionService::EVENT_MODIFICATION));
 	}
 
+	public function testSnoozedSpecificRuleMutesRecipientEvenWhenParentRuleIsActive(): void {
+		$parent = $this->row('alice', 10, 600);
+		$specific = $this->row('alice', 20, 60);
+		$specific['snoozed_until'] = time() + 3600;
+		$service = $this->service([$parent, $specific]);
+		self::assertSame([], $service->getRecipientPoliciesForNode(
+			$this->file('document.pdf'), SubscriptionService::EVENT_MODIFICATION));
+	}
+
+	public function testExpiredSpecificRuleDoesNotShadowActiveParent(): void {
+		$parent = $this->row('alice', 10, 600);
+		$specific = $this->row('alice', 20, 60);
+		$specific['expires_at'] = time() - 3600;
+		$service = $this->service([$parent, $specific]);
+		$policy = $service->getRecipientPoliciesForNode(
+			$this->file('document.pdf'), SubscriptionService::EVENT_MODIFICATION);
+		self::assertSame(600, $policy['alice']['debounceSeconds']);
+	}
+
+	public function testExpiredParentRuleDoesNotNotifyWithoutAnotherMatchingRule(): void {
+		$parent = $this->row('alice', 10, 600);
+		$parent['expires_at'] = time() - 3600;
+		$service = $this->service([$parent]);
+		self::assertSame([], $service->getRecipientEmailsForNode(
+			$this->file('document.pdf'), SubscriptionService::EVENT_MODIFICATION));
+	}
+
+	public function testResumedRuleNotifiesAfterSnoozeEnds(): void {
+		$row = $this->row('alice', 10, 45);
+		$row['snoozed_until'] = time() - 1;
+		$service = $this->service([$row]);
+		self::assertArrayHasKey('alice', $service->getRecipientPoliciesForNode(
+			$this->file('document.pdf'), SubscriptionService::EVENT_MODIFICATION));
+	}
+
 }
