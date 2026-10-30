@@ -130,3 +130,99 @@ jobs:
           path: build/abonnieren-TestEnV.zip
           if-no-files-found: error
           retention-days: 14
+
+  upgrade-legacy-app:
+    name: Upgrade from app 1.1.2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Nextcloud 35
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          submodules: true
+          repository: nextcloud/server
+          ref: stable35
+
+      - name: Checkout Abonnieren full history
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          path: apps/abonnieren
+
+      - name: Set up PHP 8.3 and SQLite
+        uses: shivammathur/setup-php@ccf2c627fe61b1b4d924adfcbd19d661a18133a0 # v2.35.2
+        with:
+          php-version: '8.3'
+          extensions: bz2, ctype, curl, dom, fileinfo, gd, iconv, intl, mbstring, openssl, pdo_sqlite, sqlite3, xml, xmlreader, xmlwriter, zip
+          coverage: none
+          ini-file: development
+
+      - name: Install original 1.1.2 app and create a legacy subscription
+        run: |
+          git -C apps/abonnieren rev-parse HEAD > /tmp/abonnieren-new-sha
+          git -C apps/abonnieren checkout --detach origin/main
+          mkdir -p data
+          php occ maintenance:install --database=sqlite --admin-user=admin --admin-pass=admin
+          php occ app:enable abonnieren
+          test "$(php occ config:app:get abonnieren installed_version)" = "1.1.2"
+          php -r '
+            require "lib/base.php";
+            $db = \OC::$server->get(\OCP\IDBConnection::class);
+            $q = $db->getQueryBuilder();
+            $q->insert("abonnieren_object_rules")->values([
+              "user_id" => $q->createNamedParameter("ci_legacy"),
+              "node_id" => $q->createNamedParameter(991234),
+              "event_mask" => $q->createNamedParameter(2),
+              "recursive" => $q->createNamedParameter(1),
+              "created_at" => $q->createNamedParameter(time()),
+              "updated_at" => $q->createNamedParameter(time()),
+            ]);
+            $q->executeStatement();
+          '
+
+      - name: Upgrade local app code and migrate existing database
+        run: |
+          git -C apps/abonnieren checkout --detach "$(cat /tmp/abonnieren-new-sha)"
+          php occ upgrade --no-interaction
+          test "$(php occ config:app:get abonnieren installed_version)" = "1.1.11"
+
+      - name: Verify existing subscription survived with safe feature defaults
+        run: |
+          php -r '
+            require "lib/base.php";
+            $db = \OC::$server->get(\OCP\IDBConnection::class);
+            $q = $db->getQueryBuilder();
+            $q->select("*")->from("abonnieren_object_rules")
+              ->where($q->expr()->eq("user_id", $q->createNamedParameter("ci_legacy")));
+            $result = $q->executeQuery();
+            $row = $result->fetch();
+            $result->closeCursor();
+            if (!is_array($row)
+              || (int)$row["node_id"] !== 991234
+              || (int)$row["event_mask"] !== 2
+              || (int)$row["recursive"] !== 1
+              || (int)$row["debounce_seconds"] !== 600
+              || (int)$row["channel_mask"] !== 1
+              || (string)$row["excluded_extensions"] !== ""
+              || (string)$row["excluded_folders"] !== ""
+              || (int)$row["expires_at"] !== 0
+              || (int)$row["snoozed_until"] !== 0
+              || (string)$row["digest_mode"] !== "instant") {
+              throw new \RuntimeException("Existing subscription lost or defaults changed during migration");
+            }
+            foreach (["abonnieren_mail_outbox", "abonnieren_upload_scopes"] as $table) {
+              $q = $db->getQueryBuilder();
+              $q->select("*")->from($table)->setMaxResults(1);
+              $r = $q->executeQuery();
+              $r->closeCursor();
+            }
+            echo "Legacy record and new tables verified\n";
+          '
+
+      - name: Show Nextcloud log on failure
+        if: failure()
+        run: |
+          if test -f data/nextcloud.log; then
+            tail -n 60 data/nextcloud.log
+          fi
