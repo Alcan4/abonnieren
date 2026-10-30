@@ -187,6 +187,127 @@ class MailOutbox {
 		$this->finish($id, $token, 'sent');
 	}
 
+
+	/**
+	 * Send all eligible uploads in a closed burst as one mail. Earlier jobs
+	 * observe a postponed deadline and return without claiming any rows.
+	 * Existing per-recipient permission checks run before summary contents
+	 * are generated to avoid disclosing revoked files.
+	 */
+	public function deliverUploadBatchById(int $id): void {
+		if ($id < 1) {
+			return;
+		}
+		$now = time();
+		$leader = $this->find($id);
+		if ($leader === null || ($leader['status'] ?? '') !== 'pending'
+			|| (string)($leader['batch_key'] ?? '') === ''
+			|| (int)$leader['batch_until'] > $now
+			|| (int)$leader['next_attempt_at'] > $now) {
+			return;
+		}
+		$key = (string)$leader['batch_key'];
+
+		$qb = $this->db->getQueryBuilder();
+		$qb->select('id')->from(self::TABLE)
+			->where($qb->expr()->eq('batch_key', $qb->createNamedParameter($key)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('pending')))
+			->andWhere($qb->expr()->lte('batch_until', $qb->createNamedParameter($now)))
+			->andWhere($qb->expr()->lte('next_attempt_at', $qb->createNamedParameter($now)))
+			->orderBy('id', 'ASC')
+			->setMaxResults(UploadBatch::MAX_ITEMS_PER_EMAIL);
+		$result = $qb->executeQuery();
+		$ids = array_map(static fn (array $row): int => (int)$row['id'], $result->fetchAll());
+		$result->closeCursor();
+		if ($ids === []) {
+			return;
+		}
+
+		$token = bin2hex(random_bytes(16));
+		$qb = $this->db->getQueryBuilder();
+		$qb->update(self::TABLE)
+			->set('status', $qb->createNamedParameter('sending'))
+			->set('attempts', 'attempts + 1')
+			->set('lease_token', $qb->createNamedParameter($token))
+			->set('lease_until', $qb->createNamedParameter($now + MailRetryPolicy::LEASE_SECONDS))
+			->set('updated_at', $qb->createNamedParameter($now))
+			->where($qb->expr()->in('id', $qb->createNamedParameter($ids, IQueryBuilder::PARAM_INT_ARRAY)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('pending')))
+			->andWhere($qb->expr()->lte('batch_until', $qb->createNamedParameter($now)))
+			->andWhere($qb->expr()->lte('next_attempt_at', $qb->createNamedParameter($now)));
+		if ($qb->executeStatement() < 1) {
+			return;
+		}
+
+		$qb = $this->db->getQueryBuilder();
+		$qb->select('*')->from(self::TABLE)
+			->where($qb->expr()->eq('batch_key', $qb->createNamedParameter($key)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
+			->andWhere($qb->expr()->eq('lease_token', $qb->createNamedParameter($token)));
+		$result = $qb->executeQuery();
+		$claimed = $result->fetchAll();
+		$result->closeCursor();
+
+		$valid = [];
+		$recipientEmail = null;
+		foreach ($claimed as $row) {
+			$rowId = (int)$row['id'];
+			$attempts = (int)$row['attempts'];
+			$userId = (string)$row['user_id'];
+			try {
+				$nodes = $this->rootFolder->getUserFolder($userId)->getById((int)$row['node_id']);
+				if ($nodes === [] || !isset($this->subscriptions->getRecipientEmailsForNode(
+					$nodes[0], (int)$row['event_mask'],
+					is_string($row['actor_id']) ? $row['actor_id'] : null,
+				)[$userId])) {
+					$this->finish($rowId, $token, 'cancelled');
+					continue;
+				}
+				$email = $this->userManager->get($userId)?->getEMailAddress();
+				if (!is_string($email) || $email === '') {
+					$this->finish($rowId, $token, 'cancelled');
+					continue;
+				}
+				$recipientEmail = $email;
+				$valid[] = $row;
+			} catch (\Throwable $e) {
+				$this->retry($rowId, $token, $attempts, $e, true);
+			}
+		}
+		if ($valid === [] || $recipientEmail === null) {
+			return;
+		}
+
+		if (count($valid) === 1) {
+			$subject = (string)$valid[0]['subject'];
+			$text = (string)$valid[0]['body_text'];
+			$html = (string)$valid[0]['body_html'];
+		} else {
+			$summary = UploadBatch::message($valid);
+			$subject = $summary['subject'];
+			$text = $summary['text'];
+			$html = $summary['html'];
+		}
+
+		try {
+			$message = $this->mailer->createMessage();
+			$message->setTo([$recipientEmail]);
+			$message->setSubject($subject);
+			$message->setPlainBody($text);
+			$message->setHtmlBody($html);
+			if ($this->mailer->send($message) !== []) {
+				throw new \RuntimeException('Mailer reported unsuccessful batch delivery');
+			}
+			foreach ($valid as $row) {
+				$this->finish((int)$row['id'], $token, 'sent');
+			}
+		} catch (\Throwable $e) {
+			foreach ($valid as $row) {
+				$this->retry((int)$row['id'], $token, (int)$row['attempts'], $e, true);
+			}
+		}
+	}
+
 	/** @return array<string, mixed>|null */
 	private function find(int $id): ?array {
 		$qb = $this->db->getQueryBuilder();
