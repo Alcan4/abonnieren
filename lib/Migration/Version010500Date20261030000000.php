@@ -30,6 +30,18 @@ class Version010500Date20261030000000 extends SimpleMigrationStep {
 		if (!$table->hasIndex('abonnieren_batch_idx')) {
 			$table->addIndex(['batch_key', 'status', 'next_attempt_at'], 'abonnieren_batch_idx');
 		}
+		// One serialized scope per subscriber/actor/folder; a new random key
+		// identifies every separate burst so older unsent work is not mixed in.
+		if (!$schema->hasTable('abonnieren_upload_scopes')) {
+			$scope = $schema->createTable('abonnieren_upload_scopes');
+			$scope->addColumn('scope_key', 'string', ['length' => 64, 'notnull' => true]);
+			$scope->addColumn('batch_key', 'string', ['length' => 64, 'notnull' => true, 'default' => '']);
+			$scope->addColumn('started_at', 'bigint', ['notnull' => true, 'default' => 0]);
+			$scope->addColumn('last_at', 'bigint', ['notnull' => true, 'default' => 0]);
+			$scope->addColumn('due_at', 'bigint', ['notnull' => true, 'default' => 0]);
+			$scope->addColumn('item_count', 'integer', ['notnull' => true, 'default' => 0]);
+			$scope->setPrimaryKey(['scope_key']);
+		}
 		return $schema;
 	}
 }
