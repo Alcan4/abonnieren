@@ -261,10 +261,6 @@ class DownloadNotificationListener implements IEventListener {
 		);
 	}
 
-	private function getUserRelativePath(Node $node): string {
-		$parts = explode('/', trim($node->getPath(), '/'));
-		return '/' . implode('/', array_slice($parts, 2));
-	}
 
 	private function getActorDisplayName(IL10N $l10n, bool $publicLinkActivity): string {
 		$user = $this->userSession->getUser();
