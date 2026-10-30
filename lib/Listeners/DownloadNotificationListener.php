@@ -178,11 +178,10 @@ class DownloadNotificationListener implements IEventListener {
 			$isFolder = $node instanceof Folder;
 			$isPublicLink = $this->shareResolver->isPublicShare($share);
 			$path = $this->getUserRelativePath($subscriptionNode);
-			$token = $share?->getToken();
 
 			$emailQueued = $this->mailDispatcher->deliver(
 				$emailRecipients,
-				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink, $path, $token, $policies): void {
+				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink, $path, $policies): void {
 					$l10n = $this->recipientL10n->forUser($userId);
 					$subject = $isFolder
 						? ($isPublicLink
@@ -212,28 +211,19 @@ class DownloadNotificationListener implements IEventListener {
 					$template->addBodyListItem($l10n->t('Downloaded by:') . ' ' . $this->getActorDisplayName($l10n, $isPublicLink));
 					$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
 
-					if ($isPublicLink && is_string($token) && $token !== '') {
-						$template->addBodyButton(
-							$l10n->t('Open public share'),
-							$this->urlGenerator->linkToRouteAbsolute(
-								'files_sharing.sharecontroller.showShare',
-								['token' => $token],
-							),
-						);
-					} else {
-						$template->addBodyButton(
-							$l10n->t('Open file'),
-							$this->urlGenerator->linkToRouteAbsolute(
-								'files.viewcontroller.showFile',
-								[
-									'dir' => $subscriptionNode instanceof Folder
-										? $path
-										: dirname($path),
-									'fileid' => (string)$subscriptionNode->getId(),
-								],
-							),
-						);
-					}
+					// Never retain a public-share capability token in delayed SMTP
+					// jobs or email templates. The subscriber must open the file
+					// through their own authenticated Nextcloud access.
+					$template->addBodyButton(
+						$l10n->t('Open file'),
+						$this->urlGenerator->linkToRouteAbsolute(
+							'files.viewcontroller.showFile',
+							[
+								'dir' => $subscriptionNode instanceof Folder ? $path : dirname($path),
+								'fileid' => (string)$subscriptionNode->getId(),
+							],
+						),
+					);
 					$template->addFooter();
 					$this->outbox->enqueue($userId, $subscriptionNode, SubscriptionService::EVENT_DOWNLOAD,
 						$actorUserId, false, $subject, $template->renderText(), $template->renderHtml(), $policies[$userId]);
