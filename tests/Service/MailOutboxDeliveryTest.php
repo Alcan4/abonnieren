@@ -27,10 +27,11 @@ class MailOutboxDeliveryTest extends TestCase {
 		$db = $this->createMock(IDBConnection::class);
 		$select = $this->createMock(IQueryBuilder::class);
 		$delete = $this->createMock(IQueryBuilder::class);
-		$db->method('getQueryBuilder')->willReturnOnConsecutiveCalls($select, $delete);
+		$update = $this->createMock(IQueryBuilder::class);
+		$db->method('getQueryBuilder')->willReturnOnConsecutiveCalls($select, $delete, $update);
 		$expr = $this->createMock(IExpressionBuilder::class);
 		$expr->method('eq')->willReturn('id = :id');
-		foreach ([$select, $delete] as $query) {
+		foreach ([$select, $delete, $update] as $query) {
 			$query->method('expr')->willReturn($expr);
 			$query->method('createNamedParameter')->willReturn(':id');
 			$query->method('where')->willReturnSelf();
@@ -42,6 +43,8 @@ class MailOutboxDeliveryTest extends TestCase {
 		$select->method('executeQuery')->willReturn($result);
 		$delete->method('delete')->willReturnSelf();
 		$delete->expects($this->once())->method('executeStatement');
+		$update->method('update')->willReturnSelf();
+		$update->method('set')->willReturnSelf();
 		return [$db, $delete];
 	}
 
@@ -90,8 +93,12 @@ class MailOutboxDeliveryTest extends TestCase {
 		$mailer->method('createMessage')->willReturn($message);
 		$mailer->expects($this->once())->method('send')->with($message);
 
+		$logger = $this->createMock(LoggerInterface::class);
+		$logger->method('error')->willReturnCallback(static function (string $message, array $context): void {
+			throw $context['exception'];
+		});
 		(new MailOutbox($db, $this->createMock(IJobList::class), $root,
-			$users, $subscriptions, $mailer, $this->createMock(LoggerInterface::class)))
+			$users, $subscriptions, $mailer, $logger))
 			->deliverById(17);
 	}
 }
