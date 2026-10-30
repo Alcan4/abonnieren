@@ -115,3 +115,18 @@ jobs:
 
       - name: Build production assets
         run: pnpm run build
+
+      - name: Package the app for TestEnV
+        run: |
+          mkdir -p build/abonnieren
+          cp -a appinfo lib js css img l10n templates LICENSE README.md build/abonnieren/
+          cd build
+          zip -qr abonnieren-TestEnV.zip abonnieren
+
+      - name: Upload TestEnV package
+        uses: actions/upload-artifact@v4
+        with:
+          name: abonnieren-TestEnV
+          path: build/abonnieren-TestEnV.zip
+          if-no-files-found: error
+          retention-days: 14
