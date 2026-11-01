@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Treat only explicit external download routes as file downloads. Internal,
+  CLI, cron, preview and Office/WOPI reads no longer generate download email,
+  Activity or native notifications. Authenticated WebDAV/Files downloads,
+  public-share downloads and folder ZIP downloads remain covered.
+
 ## 1.1.2 - 2026-09-22
 
 ### Changed
