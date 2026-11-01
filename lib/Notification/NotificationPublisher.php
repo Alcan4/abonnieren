@@ -45,7 +45,7 @@ class NotificationPublisher {
 				if ($event !== \OCA\Abonnieren\Service\SubscriptionService::EVENT_DELETION) {
 					$path = $this->recipientVisiblePath->pathFor($userId, $node);
 					if ($path !== null) {
-						$notification->setLink($this->urlGenerator->linkToRoute('files.viewcontroller.showFile', [
+						$notification->setLink($this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
 							'dir' => $node instanceof Folder ? $path : dirname($path),
 							'fileid' => (string)$node->getId(),
 						]));

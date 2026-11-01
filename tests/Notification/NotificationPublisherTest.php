@@ -21,13 +21,18 @@ class NotificationPublisherTest extends TestCase {
 		$node->method('getPath')->willReturn('/alice/files/test.txt');
 		$manager = $this->createMock(IManager::class);
 		$notification = $this->createMock(INotification::class);
-		foreach (['setApp', 'setUser', 'setDateTime', 'setObject', 'setSubject', 'setLink'] as $method) {
+		foreach (['setApp', 'setUser', 'setDateTime', 'setObject', 'setSubject'] as $method) {
 			$notification->method($method)->willReturnSelf();
 		}
 		$manager->method('createNotification')->willReturn($notification);
 		$manager->expects($this->once())->method('notify')->with($notification);
 		$url = $this->createMock(IURLGenerator::class);
-		$url->method('linkToRoute')->willReturn('/apps/files/files/42');
+		$url->expects($this->once())->method('linkToRouteAbsolute')
+			->with('files.viewcontroller.showFile', ['dir' => '/Shared', 'fileid' => '42'])
+			->willReturn('https://cloud.example.test/apps/files/files/42');
+		$notification->expects($this->once())->method('setLink')
+			->with('https://cloud.example.test/apps/files/files/42')
+			->willReturnSelf();
 		$paths = $this->createMock(RecipientVisiblePath::class);
 		$paths->method('pathFor')->with('subscriber', $node)->willReturn('/Shared/test.txt');
 		$publisher = new NotificationPublisher($manager, $url, $this->createMock(LoggerInterface::class), $paths);
