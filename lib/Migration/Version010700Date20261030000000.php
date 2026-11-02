@@ -26,7 +26,7 @@ class Version010700Date20261030000000 extends SimpleMigrationStep {
 		if ($schema->hasTable('abonnieren_mail_outbox')) {
 			$table = $schema->getTable('abonnieren_mail_outbox');
 			if (!$table->hasColumn('digest_key')) {
-				$table->addColumn('digest_key', 'string', ['length' => 64, 'notnull' => true, 'default' => '']);
+				$table->addColumn('digest_key', 'string', ['length' => 64, 'notnull' => false, 'default' => null]);
 			}
 			if (!$table->hasIndex('abonnieren_digest_idx')) {
 				$table->addIndex(['digest_key', 'status', 'next_attempt_at'], 'abonnieren_digest_idx');

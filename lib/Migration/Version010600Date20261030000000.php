@@ -17,10 +17,10 @@ class Version010600Date20261030000000 extends SimpleMigrationStep {
 		if ($schema->hasTable('abonnieren_object_rules')) {
 			$table = $schema->getTable('abonnieren_object_rules');
 			if (!$table->hasColumn('quiet_start')) {
-				$table->addColumn('quiet_start', 'string', ['length' => 5, 'notnull' => true, 'default' => '']);
+				$table->addColumn('quiet_start', 'string', ['length' => 5, 'notnull' => false, 'default' => null]);
 			}
 			if (!$table->hasColumn('quiet_end')) {
-				$table->addColumn('quiet_end', 'string', ['length' => 5, 'notnull' => true, 'default' => '']);
+				$table->addColumn('quiet_end', 'string', ['length' => 5, 'notnull' => false, 'default' => null]);
 			}
 			if (!$table->hasColumn('quiet_timezone')) {
 				$table->addColumn('quiet_timezone', 'string', ['length' => 64, 'notnull' => true, 'default' => 'UTC']);
@@ -29,10 +29,10 @@ class Version010600Date20261030000000 extends SimpleMigrationStep {
 		if ($schema->hasTable('abonnieren_mail_outbox')) {
 			$table = $schema->getTable('abonnieren_mail_outbox');
 			if (!$table->hasColumn('quiet_start')) {
-				$table->addColumn('quiet_start', 'string', ['length' => 5, 'notnull' => true, 'default' => '']);
+				$table->addColumn('quiet_start', 'string', ['length' => 5, 'notnull' => false, 'default' => null]);
 			}
 			if (!$table->hasColumn('quiet_end')) {
-				$table->addColumn('quiet_end', 'string', ['length' => 5, 'notnull' => true, 'default' => '']);
+				$table->addColumn('quiet_end', 'string', ['length' => 5, 'notnull' => false, 'default' => null]);
 			}
 			if (!$table->hasColumn('quiet_timezone')) {
 				$table->addColumn('quiet_timezone', 'string', ['length' => 64, 'notnull' => true, 'default' => 'UTC']);
