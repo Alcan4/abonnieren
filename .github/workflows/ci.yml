@@ -32,17 +32,25 @@ jobs:
         run: |
           php -r '$xml = simplexml_load_file("appinfo/info.xml"); if ($xml === false) { exit(1); }'
 
-  phpunit-nextcloud35:
-    name: PHPUnit (Nextcloud 35)
+  phpunit-nextcloud:
+    name: PHPUnit (Nextcloud ${{ matrix.nextcloud }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - nextcloud: '34'
+            ref: v34.0.5
+          - nextcloud: '35'
+            ref: stable35
     steps:
-      - name: Checkout Nextcloud 35
+      - name: Checkout Nextcloud ${{ matrix.nextcloud }}
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
           submodules: true
           repository: nextcloud/server
-          ref: stable35
+          ref: ${{ matrix.ref }}
 
       - name: Checkout Abonnieren
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -131,7 +139,7 @@ jobs:
       - name: Package the app for TestEnV
         run: |
           mkdir -p build/abonnieren
-          cp -a appinfo lib js css img l10n templates LICENSE README.md build/abonnieren/
+          cp -a appinfo lib js css img l10n templates CHANGELOG.md LICENSE README.md build/abonnieren/
           cd build
           zip -qr abonnieren-TestEnV.zip abonnieren
 
@@ -144,16 +152,24 @@ jobs:
           retention-days: 14
 
   upgrade-legacy-app:
-    name: Upgrade from app 1.1.2
+    name: Upgrade from app 1.1.2 (Nextcloud ${{ matrix.nextcloud }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - nextcloud: '34'
+            ref: v34.0.5
+          - nextcloud: '35'
+            ref: stable35
     steps:
-      - name: Checkout Nextcloud 35
+      - name: Checkout Nextcloud ${{ matrix.nextcloud }}
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
           submodules: true
           repository: nextcloud/server
-          ref: stable35
+          ref: ${{ matrix.ref }}
 
       - name: Checkout Abonnieren full history
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -203,8 +219,9 @@ jobs:
 
       - name: Upgrade local app code and migrate existing database
         run: |
+          php occ app:disable abonnieren
           git -C apps/abonnieren checkout --detach "$(cat /tmp/abonnieren-new-sha)"
-          php occ upgrade --no-interaction
+          php occ app:enable abonnieren
           php -r '
             require "lib/base.php";
             $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
