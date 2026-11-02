@@ -1,4 +1,4 @@
-# TestEnV validation plan — Abonnieren 1.1.11 development stack
+# TestEnV validation plan — Abonnieren 1.1.12 development stack
 
 **Status:** Pre-deployment checklist only. All feature PRs and this integration PR remain drafts. **Never apply this to production.**
 
@@ -8,7 +8,7 @@ The latest GitHub Actions run must pass:
 - PHP syntax and app metadata
 - Nextcloud 35 PHPUnit, including *real* SQLite queries, migrations, service injection, atomic mail claims, SMTP retry and upload grouping
 - Frontend lint/build and the packaged **abonnieren-TestEnV** ZIP
-- A disposable **1.1.2 → 1.1.11 upgrade**, preserving an existing subscription and its new default settings
+- A disposable **1.1.2 → 1.1.12 upgrade**, preserving an existing subscription and its new default settings
 
 A green CI run does not replace real client testing.
 
@@ -24,7 +24,7 @@ A green CI run does not replace real client testing.
 
 1. Run php occ maintenance:mode --on from the Nextcloud installation directory.
 2. Replace only the TestEnV app directory with the validated ZIP contents; preserve file permissions and ownership.
-3. Run php occ upgrade --no-interaction and check the exit code and logs. The expected app version is 1.1.11.
+3. Run php occ upgrade --no-interaction and check the exit code and logs. The expected app version is 1.1.12.
 4. Run php occ maintenance:mode --off, check php occ status, inspect Files, and verify subscriptions and permissions survived.
 5. Verify Nextcloud cron is actually running; execute the configured cron runner when needed (typically php -f cron.php).
 
@@ -41,6 +41,7 @@ A green CI run does not replace real client testing.
 - [ ] Hourly/daily digests and overnight quiet hours; verify delivery resumes afterward.
 - [ ] Temporary subscriptions expire, snoozed subscriptions resume, and nested overrides work correctly.
 - [ ] Revoke access before queued mail delivery; inaccessible file details must not be sent.
+- [ ] Delete an item while subscribed to its parent, then unsubscribe/change folder exclusions before scheduled mail: deletion mail must be cancelled. A direct subscription on the deleted item should still report the deletion while its parent remains accessible.
 - [ ] Simulate a temporary SMTP failure without interrupting the uploader; verify bounded retries and eventual recovery.
 - [ ] Restart the cron worker after enqueue to check that persistent mail is recoverable.
 - [ ] Parallel uploads and concurrent workers: no simultaneous duplicate claim. SMTP cannot guarantee exactly-once delivery after a crash during remote acceptance.

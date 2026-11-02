@@ -195,7 +195,7 @@ jobs:
           php -r '
             require "lib/base.php";
             $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
-            if (($versions["abonnieren"] ?? null) !== "1.1.11") {
+            if (($versions["abonnieren"] ?? null) !== "1.1.12") {
               throw new \RuntimeException("App migration version wrong: " . json_encode($versions["abonnieren"] ?? null));
             }
           '
@@ -224,6 +224,11 @@ jobs:
               || (string)$row["digest_mode"] !== "instant") {
               throw new \RuntimeException("Existing subscription lost or defaults changed during migration");
             }
+            $q = $db->getQueryBuilder();
+            $q->select("source_rule_id", "source_rule_hash", "source_rule_expires_at")
+              ->from("abonnieren_mail_outbox")->setMaxResults(1);
+            $r = $q->executeQuery();
+            $r->closeCursor();
             foreach (["abonnieren_mail_outbox", "abonnieren_upload_scopes"] as $table) {
               $q = $db->getQueryBuilder();
               $q->select("*")->from($table)->setMaxResults(1);

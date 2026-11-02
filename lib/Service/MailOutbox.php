@@ -51,6 +51,11 @@ class MailOutbox {
 			(string)($quietHours['quietEnd'] ?? ''),
 			(string)($quietHours['quietTimezone'] ?? 'UTC'),
 		);
+		// Capture the exact rule that authorized a deletion. The node may be
+		// gone and its direct subscription auto-removed before SMTP is sent.
+		$quiet['sourceRuleId'] = (int)($quietHours['ruleNodeId'] ?? 0);
+		$quiet['sourceRuleHash'] = (string)($quietHours['ruleHash'] ?? '');
+		$quiet['sourceRuleExpiresAt'] = (int)($quietHours['expiresAt'] ?? 0);
 		$now = time();
 		$digestMode = (string)($quietHours['digestMode'] ?? DigestSchedule::INSTANT);
 		$digestTime = (string)($quietHours['digestTime'] ?? '08:00');
@@ -122,6 +127,9 @@ class MailOutbox {
 			'quiet_end' => $qb->createNamedParameter($quiet['end'] ?? ''),
 			'quiet_timezone' => $qb->createNamedParameter($quiet['timezone'] ?? 'UTC'),
 			'digest_key' => $qb->createNamedParameter($digestKey),
+			'source_rule_id' => $qb->createNamedParameter($quiet['sourceRuleId'] ?? 0),
+			'source_rule_hash' => $qb->createNamedParameter($quiet['sourceRuleHash'] ?? ''),
+			'source_rule_expires_at' => $qb->createNamedParameter($quiet['sourceRuleExpiresAt'] ?? 0),
 		]);
 		$qb->executeStatement();
 		return $this->db->lastInsertId(self::TABLE);
@@ -193,6 +201,10 @@ class MailOutbox {
 			}
 			$nodes = $this->rootFolder->getUserFolder($userId)->getById($accessId);
 			if ($nodes === []) {
+				$this->finish($id, $token, 'cancelled');
+				return;
+			}
+			if ($deleted && !$this->deletionStillAuthorized($row)) {
 				$this->finish($id, $token, 'cancelled');
 				return;
 			}
@@ -332,10 +344,11 @@ class MailOutbox {
 				$deleted = (bool)$row['deleted'];
 				$accessId = $deleted ? (int)($row['parent_id'] ?? 0) : (int)$row['node_id'];
 				$nodes = $accessId > 0 ? $this->rootFolder->getUserFolder($userId)->getById($accessId) : [];
-				if ($nodes === [] || (!$deleted && !isset($this->subscriptions->getRecipientEmailsForNode(
-					$nodes[0], (int)$row['event_mask'],
-					is_string($row['actor_id']) ? $row['actor_id'] : null,
-				)[$userId]))) {
+				if ($nodes === [] || ($deleted && !$this->deletionStillAuthorized($row))
+					|| (!$deleted && !isset($this->subscriptions->getRecipientEmailsForNode(
+						$nodes[0], (int)$row['event_mask'],
+						is_string($row['actor_id']) ? $row['actor_id'] : null,
+					)[$userId]))) {
 					$this->finish($rowId, $token, 'cancelled');
 					continue;
 				}
@@ -382,6 +395,45 @@ class MailOutbox {
 				$this->retry((int)$row['id'], $token, (int)$row['attempts'], $e, !$digest, $digest);
 			}
 		}
+	}
+
+	/**
+	 * The deleted node can no longer be resolved. We still need access to its
+	 * parent (checked by caller) and evidence of the original subscription.
+	 * For ancestor rules, recheck the current rule's full policy fingerprint:
+	 * deleting the rule, changing exclusions or snoozing cancels the email.
+	 * For direct rules, Nextcloud automatically deletes the rule alongside the
+	 * node, so the original authenticated snapshot is the only surviving proof.
+	 *
+	 * Legacy outbox rows without provenance fail closed.
+	 *
+	 * @param array<string,mixed> $row
+	 */
+	private function deletionStillAuthorized(array $row): bool {
+		$sourceId = (int)($row['source_rule_id'] ?? 0);
+		$nodeId = (int)$row['node_id'];
+		$fingerprint = (string)($row['source_rule_hash'] ?? '');
+		$expiresAt = (int)($row['source_rule_expires_at'] ?? 0);
+		if ($sourceId < 1 || strlen($fingerprint) !== 64
+			|| ($expiresAt !== 0 && $expiresAt <= time())) {
+			return false;
+		}
+		if ($sourceId === $nodeId) {
+			// The exact rule is already gone, but parent-access and recorded
+			// active policy were verified when the original event occurred.
+			return true;
+		}
+		$userId = (string)$row['user_id'];
+		$rule = $this->subscriptions->getRule($userId, $sourceId);
+		if ($rule === null
+			|| (int)$rule['nodeId'] !== $sourceId
+			|| ((int)$rule['eventMask'] & SubscriptionService::EVENT_DELETION) === 0
+			|| ((int)$rule['channelMask'] & SubscriptionService::CHANNEL_EMAIL) === 0
+			|| SubscriptionLifecycle::expired((int)$rule['expiresAt'], time())
+			|| SubscriptionLifecycle::snoozed((int)$rule['snoozedUntil'], time())) {
+			return false;
+		}
+		return hash_equals($fingerprint, (string)$rule['ruleHash']);
 	}
 
 	/** Does not spend an SMTP attempt when delivery is postponed for quiet hours. */

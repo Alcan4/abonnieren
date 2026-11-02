@@ -129,7 +129,7 @@ class SubscriptionService {
 	 * One winning rule per subscriber. The closest matching rule overrides
 	 * ancestor preferences, including when that rule excludes the extension.
 	 *
-	 * @return array<string,array{email:string,debounceSeconds:int,excludedExtensions:list<string>,channelMask:int,quietStart:string,quietEnd:string,quietTimezone:string,digestMode:string,digestTime:string,expiresAt:int,snoozedUntil:int,excludedFolders:list<string>}>
+	 * @return array<string,array{email:string,debounceSeconds:int,excludedExtensions:list<string>,channelMask:int,quietStart:string,quietEnd:string,quietTimezone:string,digestMode:string,digestTime:string,expiresAt:int,snoozedUntil:int,excludedFolders:list<string>,ruleNodeId:int,ruleHash:string}>
 	 */
 	public function getRecipientPoliciesForNode(Node $node, int $event, ?string $actorUserId = null): array {
 		if (($event & self::ALLOWED_EVENTS) !== $event || $event < 1) {
@@ -161,7 +161,7 @@ class SubscriptionService {
 		}
 
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until', 'excluded_folders')
+		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until', 'excluded_folders', 'created_at', 'updated_at')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->in(
 				'node_id',
@@ -214,6 +214,8 @@ class SubscriptionService {
 				continue;
 			}
 			$selected[$userId] = [
+				'ruleNodeId' => $ruleNodeId,
+				'ruleHash' => self::fingerprint($row),
 				'email' => $email,
 				'channelMask' => $channels,
 				'quietStart' => (string)($row['quiet_start'] ?? ''),
@@ -271,8 +273,28 @@ class SubscriptionService {
 		}
 	}
 
+	/**
+	 * Fingerprint a rule's persisted policy without including the recipient's
+	 * email address. A subsequent unsubscribe, resubscribe or preference change
+	 * invalidates its previously queued deletion emails.
+	 */
+	private static function fingerprint(array $row): string {
+		$fields = [
+			'user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds',
+			'excluded_extensions', 'excluded_folders', 'channel_mask',
+			'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode',
+			'digest_time', 'expires_at', 'snoozed_until', 'created_at', 'updated_at',
+		];
+		$values = [];
+		foreach ($fields as $field) {
+			$values[] = (string)($row[$field] ?? '');
+		}
+		return hash('sha256', json_encode($values, JSON_THROW_ON_ERROR));
+	}
+
 	private function normalizeRow(array $row): array {
 		return [
+			'ruleHash' => self::fingerprint($row),
 			'userId' => (string)$row['user_id'],
 			'nodeId' => (int)$row['node_id'],
 			'eventMask' => (int)$row['event_mask'],
