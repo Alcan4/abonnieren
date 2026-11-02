@@ -2,14 +2,54 @@
 
 ## Unreleased
 
+## 1.1.12 - 2026-11-02
+
+### Added
+
+- Independent email and native Nextcloud notification channels for every
+  subscription.
+- Per-rule suppression windows, file-extension exclusions and relative folder
+  exclusions with descendant overrides.
+- Quiet hours, hourly and daily email digests, temporary subscriptions and
+  per-rule snoozing.
+- Reliable background mail delivery with persistent outbox state, bounded
+  retries, abandoned-claim recovery and automatic removal of stored message
+  content after completion.
+- Ninety-second upload grouping with a sliding deadline, a ten-minute maximum
+  window and a fifty-item limit.
+
+### Changed
+
+- Recheck the recipient's current access and subscription policy immediately
+  before delayed mail or digest delivery.
+- Resolve paths through the recipient's own Files view for email, Activity and
+  native notifications.
+- Run upgrade and integration coverage on Nextcloud 35 with SQLite, MariaDB and
+  PostgreSQL, including upgrades from app version 1.1.2.
+
 ### Fixed
 
+- Keep subscription replacement atomic so a failed save cannot remove the
+  previous rule.
+- Include the database rule ID in queued-message authorization, preventing an
+  old deletion message from becoming valid after a rapid unsubscribe and
+  resubscribe.
+- Isolate delivery failures per recipient so one broken address cannot block
+  later subscribers.
+- Handle ownerless shares without raising `NoUserException`.
 - Treat only explicit external download routes as file downloads. Internal,
   CLI, cron, preview and Office/WOPI reads no longer generate download email,
   Activity or native notifications. Authenticated WebDAV/Files downloads,
   public-share downloads and folder ZIP downloads remain covered.
 - Generate absolute recipient-safe links for native Nextcloud notifications so
   Nextcloud 35 accepts and persists them.
+
+### Security
+
+- Remove public-share capability tokens and owner-private paths from queued
+  messages and notification links.
+- Cancel and scrub queued content when access is revoked or a subscription no
+  longer authorizes delivery.
 
 ## 1.1.2 - 2026-09-22
 
