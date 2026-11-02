@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OCA\Abonnieren\Notification;
 
 use OCA\Abonnieren\AppInfo\Application;
+use OCA\Abonnieren\Service\RecipientVisiblePath;
 use OCP\Files\Folder;
 use OCP\Files\Node;
 use OCP\IURLGenerator;
@@ -17,6 +18,7 @@ class NotificationPublisher {
 		private IManager $manager,
 		private IURLGenerator $urlGenerator,
 		private LoggerInterface $logger,
+		private RecipientVisiblePath $recipientVisiblePath,
 	) {
 	}
 
@@ -41,11 +43,13 @@ class NotificationPublisher {
 						'kind' => $node instanceof Folder ? 'folder' : 'file',
 					]);
 				if ($event !== \OCA\Abonnieren\Service\SubscriptionService::EVENT_DELETION) {
-					$path = $this->relativePath($node);
-					$notification->setLink($this->urlGenerator->linkToRoute('files.viewcontroller.showFile', [
-						'dir' => $node instanceof Folder ? $path : dirname($path),
-						'fileid' => (string)$node->getId(),
-					]));
+					$path = $this->recipientVisiblePath->pathFor($userId, $node);
+					if ($path !== null) {
+						$notification->setLink($this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
+							'dir' => $node instanceof Folder ? $path : dirname($path),
+							'fileid' => (string)$node->getId(),
+						]));
+					}
 				}
 				$this->manager->notify($notification);
 				$sent[] = $userId;
@@ -61,8 +65,4 @@ class NotificationPublisher {
 		return $sent;
 	}
 
-	private function relativePath(Node $node): string {
-		$parts = explode('/', trim($node->getPath(), '/'));
-		return '/' . implode('/', array_slice($parts, 2));
-	}
 }

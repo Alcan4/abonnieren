@@ -409,4 +409,24 @@ final class InstalledDatabaseTest extends TestCase {
 			$this->row('abonnieren_mail_outbox', 'id', (int)$row['id'])['status']);
 	}
 
+	public function testResavingIdenticalRuleChangesItsDeletionAuthorizationIdentity(): void {
+		$nodeId = 9800000 + random_int(1, 100000);
+		$user = $this->createMock(IUser::class);
+		$user->method('getEMailAddress')->willReturn('synthetic@example.test');
+		$manager = $this->createMock(IUserManager::class);
+		$manager->method('get')->with($this->uid)->willReturn($user);
+		$service = new SubscriptionService(
+			$this->db, $manager, $this->createMock(IRootFolder::class),
+		);
+		$service->upsertRule($this->uid, $nodeId, SubscriptionService::EVENT_DELETION, false);
+		$first = $service->getRule($this->uid, $nodeId);
+		self::assertIsArray($first);
+		self::assertSame(64, strlen($first['ruleHash']));
+		$service->upsertRule($this->uid, $nodeId, SubscriptionService::EVENT_DELETION, false);
+		$second = $service->getRule($this->uid, $nodeId);
+		self::assertIsArray($second);
+		self::assertNotSame($first['ruleHash'], $second['ruleHash'],
+			'Deleting and recreating an identical rule must invalidate queued deletion email');
+	}
+
 }

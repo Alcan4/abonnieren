@@ -75,6 +75,7 @@ class SubscriptionTab extends HTMLElement {
 			this._loadedNodeId = nodeId
 			this.renderForm(payload.rule)
 		} catch (error) {
+			if (sequence !== this._loadingSequence) return
 			console.error('Abonnieren: failed to load subscription', error)
 			this.renderState(t('abonnieren', 'The subscription could not be loaded.'), true)
 		}
@@ -232,7 +233,8 @@ class SubscriptionTab extends HTMLElement {
 		const toUnixSeconds = (value) => {
 			if (!value) return 0
 			const parsed = new Date(value).getTime()
-			return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0
+			if (!Number.isFinite(parsed)) throw new Error(t('abonnieren', 'Invalid subscription date.'))
+			return Math.floor(parsed / 1000)
 		}
 		const expiresLabel = document.createElement('label')
 		expiresLabel.className = 'abonnieren-subscription-field'
@@ -330,19 +332,34 @@ class SubscriptionTab extends HTMLElement {
 		save.addEventListener('click', () => {
 			let mask = 0
 			checkboxes.forEach((checkbox, bit) => { if (checkbox.checked) mask |= bit })
-			this.saveRule(mask, Boolean(recursive?.checked), save, null, feedback, {
-				debounceSeconds: Number(delay.value),
-				excludedExtensions: extensions.value,
-				excludedFolders: excludedFoldersInput?.value || '',
-				channelMask: Number(emailChannel.checked) + 2 * Number(nativeChannel.checked),
-				quietStart: quietEnabled.checked ? quietStart.value : '',
-				quietEnd: quietEnabled.checked ? quietEnd.value : '',
-				quietTimezone: quietTimezone.value.trim() || 'UTC',
-				digestMode: digestMode.value,
-				digestTime: digestTime.value,
-				expiresAt: toUnixSeconds(expiresAt.value),
-				snoozedUntil: toUnixSeconds(snoozedUntil.value),
-			})
+			if (mask === 0) {
+				feedback.className = 'abonnieren-subscription-feedback error'
+				feedback.textContent = t('abonnieren', 'Select at least one event, or use Remove subscription.')
+				return
+			}
+			if (!emailChannel.checked && !nativeChannel.checked) {
+				feedback.className = 'abonnieren-subscription-feedback error'
+				feedback.textContent = t('abonnieren', 'Select at least one delivery method.')
+				return
+			}
+			try {
+				this.saveRule(mask, Boolean(recursive?.checked), save, null, feedback, {
+					debounceSeconds: Number(delay.value),
+					excludedExtensions: extensions.value,
+					excludedFolders: excludedFoldersInput?.value || '',
+					channelMask: Number(emailChannel.checked) + 2 * Number(nativeChannel.checked),
+					quietStart: quietEnabled.checked ? quietStart.value : '',
+					quietEnd: quietEnabled.checked ? quietEnd.value : '',
+					quietTimezone: quietTimezone.value.trim() || 'UTC',
+					digestMode: digestMode.value,
+					digestTime: digestTime.value,
+					expiresAt: toUnixSeconds(expiresAt.value),
+					snoozedUntil: toUnixSeconds(snoozedUntil.value),
+				})
+			} catch (error) {
+				feedback.className = 'abonnieren-subscription-feedback error'
+				feedback.textContent = error.message || t('abonnieren', 'Invalid subscription settings.')
+			}
 		})
 		this.replaceChildren(container)
 	}

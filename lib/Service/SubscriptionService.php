@@ -38,15 +38,19 @@ class SubscriptionService {
 		$lifecycle = SubscriptionLifecycle::validate($expiresAt, $snoozedUntil, time());
 		$excludedFolders = FolderExclusions::normalize($excludedFolders);
 
-		$qb = $this->db->getQueryBuilder();
-		$qb->delete('abonnieren_object_rules')
-			->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
-			->andWhere($qb->expr()->eq('node_id', $qb->createNamedParameter($nodeId)));
-		$qb->executeStatement();
+		// Replacing a rule must be atomic: failed insert must not erase the
+		// subscription that the user already had.
+		$this->db->beginTransaction();
+		try {
+			$qb = $this->db->getQueryBuilder();
+			$qb->delete('abonnieren_object_rules')
+				->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
+				->andWhere($qb->expr()->eq('node_id', $qb->createNamedParameter($nodeId)));
+			$qb->executeStatement();
 
-		$now = time();
-		$qb = $this->db->getQueryBuilder();
-		$qb->insert('abonnieren_object_rules')
+			$now = time();
+			$qb = $this->db->getQueryBuilder();
+			$qb->insert('abonnieren_object_rules')
 			->values([
 				'user_id' => $qb->createNamedParameter($userId),
 				'node_id' => $qb->createNamedParameter($nodeId),
@@ -66,7 +70,12 @@ class SubscriptionService {
 				'created_at' => $qb->createNamedParameter($now),
 				'updated_at' => $qb->createNamedParameter($now),
 			]);
-		$qb->executeStatement();
+			$qb->executeStatement();
+			$this->db->commit();
+		} catch (\Throwable $e) {
+			$this->db->rollBack();
+			throw $e;
+		}
 	}
 
 	public function deleteRule(string $userId, int $nodeId): int {
@@ -88,7 +97,7 @@ class SubscriptionService {
 
 	public function getRule(string $userId, int $nodeId): ?array {
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until', 'excluded_folders', 'created_at', 'updated_at')
+		$qb->select('id', 'user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until', 'excluded_folders', 'created_at', 'updated_at')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
 			->andWhere($qb->expr()->eq('node_id', $qb->createNamedParameter($nodeId)));
@@ -102,7 +111,7 @@ class SubscriptionService {
 
 	public function getRulesByUser(string $userId): array {
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until', 'excluded_folders', 'created_at', 'updated_at')
+		$qb->select('id', 'user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until', 'excluded_folders', 'created_at', 'updated_at')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
 			->orderBy('updated_at', 'DESC');
@@ -161,7 +170,7 @@ class SubscriptionService {
 		}
 
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until', 'excluded_folders', 'created_at', 'updated_at')
+		$qb->select('id', 'user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode', 'digest_time', 'expires_at', 'snoozed_until', 'excluded_folders', 'created_at', 'updated_at')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->in(
 				'node_id',
@@ -280,7 +289,8 @@ class SubscriptionService {
 	 */
 	private static function fingerprint(array $row): string {
 		$fields = [
-			'user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds',
+			// Delete + recreate within one second still gets a new row identity.
+			'id', 'user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds',
 			'excluded_extensions', 'excluded_folders', 'channel_mask',
 			'quiet_start', 'quiet_end', 'quiet_timezone', 'digest_mode',
 			'digest_time', 'expires_at', 'snoozed_until', 'created_at', 'updated_at',
