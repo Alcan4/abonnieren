@@ -142,6 +142,52 @@ class SubscriptionTab extends HTMLElement {
 		pushLabel.append(nativeChannel, document.createTextNode(t('abonnieren', 'Nextcloud notifications (including supported push clients)')))
 		container.append(channelTitle, emailLabel, pushLabel)
 
+		const quietTitle = document.createElement('h4')
+		quietTitle.className = 'abonnieren-preferences-title'
+		quietTitle.textContent = t('abonnieren', 'Email quiet hours')
+		const quietOption = document.createElement('label')
+		quietOption.className = 'abonnieren-subscription-option'
+		const quietEnabled = document.createElement('input')
+		quietEnabled.type = 'checkbox'
+		quietEnabled.checked = Boolean(rule?.quietStart && rule?.quietEnd)
+		quietOption.append(quietEnabled, document.createTextNode(t('abonnieren', 'Do not send emails during quiet hours')))
+		const quietTimes = document.createElement('div')
+		quietTimes.className = 'abonnieren-quiet-time-row'
+		const quietStartLabel = document.createElement('label')
+		quietStartLabel.className = 'abonnieren-subscription-field'
+		quietStartLabel.textContent = t('abonnieren', 'From')
+		const quietStart = document.createElement('input')
+		quietStart.type = 'time'
+		quietStart.value = rule?.quietStart || '22:00'
+		quietStartLabel.append(quietStart)
+		const quietEndLabel = document.createElement('label')
+		quietEndLabel.className = 'abonnieren-subscription-field'
+		quietEndLabel.textContent = t('abonnieren', 'Until')
+		const quietEnd = document.createElement('input')
+		quietEnd.type = 'time'
+		quietEnd.value = rule?.quietEnd || '07:00'
+		quietEndLabel.append(quietEnd)
+		quietTimes.append(quietStartLabel, quietEndLabel)
+		const timezoneLabel = document.createElement('label')
+		timezoneLabel.className = 'abonnieren-subscription-field'
+		timezoneLabel.textContent = t('abonnieren', 'Time zone (IANA)')
+		const quietTimezone = document.createElement('input')
+		quietTimezone.type = 'text'
+		quietTimezone.maxLength = 64
+		quietTimezone.value = rule?.quietTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+		quietTimezone.placeholder = 'Europe/Berlin'
+		timezoneLabel.append(quietTimezone)
+		const quietHint = document.createElement('p')
+		quietHint.className = 'abonnieren-subscription-description'
+		quietHint.textContent = t('abonnieren', 'Emails will be sent after the quiet period ends. Nextcloud notifications remain immediate.')
+		const setQuietVisible = () => {
+			quietTimes.hidden = !quietEnabled.checked
+			timezoneLabel.hidden = !quietEnabled.checked
+		}
+		quietEnabled.addEventListener('change', setQuietVisible)
+		setQuietVisible()
+		container.append(quietTitle, quietOption, quietTimes, timezoneLabel, quietHint)
+
 		const settingsTitle = document.createElement('h4')
 		settingsTitle.className = 'abonnieren-preferences-title'
 		settingsTitle.textContent = t('abonnieren', 'Notification filters')
@@ -201,6 +247,9 @@ class SubscriptionTab extends HTMLElement {
 				debounceSeconds: Number(delay.value),
 				excludedExtensions: extensions.value,
 				channelMask: Number(emailChannel.checked) + 2 * Number(nativeChannel.checked),
+				quietStart: quietEnabled.checked ? quietStart.value : '',
+				quietEnd: quietEnabled.checked ? quietEnd.value : '',
+				quietTimezone: quietTimezone.value.trim() || 'UTC',
 			})
 		})
 		this.replaceChildren(container)
