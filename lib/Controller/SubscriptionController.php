@@ -112,11 +112,18 @@ class SubscriptionController extends Controller {
 		$quietTimezone = (string)$this->request->getParam('quietTimezone', 'UTC');
 		$digestMode = (string)$this->request->getParam('digestMode', 'instant');
 		$digestTime = (string)$this->request->getParam('digestTime', '08:00');
+		$expiresRaw = (string)$this->request->getParam('expiresAt', '0');
+		$snoozedRaw = (string)$this->request->getParam('snoozedUntil', '0');
+		if (!ctype_digit($expiresRaw) || !ctype_digit($snoozedRaw)
+			|| strlen($expiresRaw) > 12 || strlen($snoozedRaw) > 12) {
+			return new DataResponse(['success' => false, 'message' => 'Invalid subscription dates'], Http::STATUS_BAD_REQUEST);
+		}
 
 		try {
 			$this->subscriptionService->upsertRule($userId, $nodeId, $eventMask, $recursive,
 				(int)$debounceRaw, $excludedExtensions, (int)$channelsRaw,
-				$quietStart, $quietEnd, $quietTimezone, $digestMode, $digestTime);
+				$quietStart, $quietEnd, $quietTimezone, $digestMode, $digestTime,
+				(int)$expiresRaw, (int)$snoozedRaw);
 		} catch (\InvalidArgumentException $e) {
 			return new DataResponse(['success' => false, 'message' => $e->getMessage()], Http::STATUS_BAD_REQUEST);
 		}

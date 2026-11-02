@@ -220,6 +220,45 @@ class SubscriptionTab extends HTMLElement {
 		container.append(quietTitle, quietOption, quietTimes, timezoneLabel, quietHint,
 			digestTitle, digestLabel, digestTimeLabel, digestHint)
 
+		const lifecycleTitle = document.createElement('h4')
+		lifecycleTitle.className = 'abonnieren-preferences-title'
+		lifecycleTitle.textContent = t('abonnieren', 'Subscription duration')
+		const toLocalDateTime = (seconds) => {
+			if (!seconds || seconds <= 0) return ''
+			const date = new Date(seconds * 1000)
+			const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+			return local.toISOString().slice(0, 16)
+		}
+		const toUnixSeconds = (value) => {
+			if (!value) return 0
+			const parsed = new Date(value).getTime()
+			return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0
+		}
+		const expiresLabel = document.createElement('label')
+		expiresLabel.className = 'abonnieren-subscription-field'
+		expiresLabel.textContent = t('abonnieren', 'Subscription expires at (optional)')
+		const expiresAt = document.createElement('input')
+		expiresAt.type = 'datetime-local'
+		expiresAt.value = toLocalDateTime(rule?.expiresAt)
+		expiresLabel.append(expiresAt)
+		const snoozeLabel = document.createElement('label')
+		snoozeLabel.className = 'abonnieren-subscription-field'
+		snoozeLabel.textContent = t('abonnieren', 'Snooze notifications until (optional)')
+		const snoozedUntil = document.createElement('input')
+		snoozedUntil.type = 'datetime-local'
+		snoozedUntil.value = toLocalDateTime(rule?.snoozedUntil)
+		snoozeLabel.append(snoozedUntil)
+		const lifecycleHint = document.createElement('p')
+		lifecycleHint.className = 'abonnieren-subscription-description'
+		lifecycleHint.textContent = t('abonnieren', 'Leave either date empty for no limit. Snoozing mutes new notifications; expiration ends this subscription.')
+		if (rule?.isExpired) {
+			const expiredNote = document.createElement('p')
+			expiredNote.className = 'abonnieren-subscription-feedback error'
+			expiredNote.textContent = t('abonnieren', 'This subscription has expired. Clear or update its expiration date to reactivate it.')
+			container.append(expiredNote)
+		}
+		container.append(lifecycleTitle, expiresLabel, snoozeLabel, lifecycleHint)
+
 		const settingsTitle = document.createElement('h4')
 		settingsTitle.className = 'abonnieren-preferences-title'
 		settingsTitle.textContent = t('abonnieren', 'Notification filters')
@@ -284,6 +323,8 @@ class SubscriptionTab extends HTMLElement {
 				quietTimezone: quietTimezone.value.trim() || 'UTC',
 				digestMode: digestMode.value,
 				digestTime: digestTime.value,
+				expiresAt: toUnixSeconds(expiresAt.value),
+				snoozedUntil: toUnixSeconds(snoozedUntil.value),
 			})
 		})
 		this.replaceChildren(container)
