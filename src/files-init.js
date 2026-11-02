@@ -180,13 +180,45 @@ class SubscriptionTab extends HTMLElement {
 		const quietHint = document.createElement('p')
 		quietHint.className = 'abonnieren-subscription-description'
 		quietHint.textContent = t('abonnieren', 'Emails will be sent after the quiet period ends. Nextcloud notifications remain immediate.')
-		const setQuietVisible = () => {
-			quietTimes.hidden = !quietEnabled.checked
-			timezoneLabel.hidden = !quietEnabled.checked
+		const digestTitle = document.createElement('h4')
+		digestTitle.className = 'abonnieren-preferences-title'
+		digestTitle.textContent = t('abonnieren', 'Email summaries')
+		const digestLabel = document.createElement('label')
+		digestLabel.className = 'abonnieren-subscription-field'
+		digestLabel.textContent = t('abonnieren', 'Email frequency')
+		const digestMode = document.createElement('select')
+		for (const [value, label] of [
+			['instant', 'As events occur'],
+			['hourly', 'Hourly summary'],
+			['daily', 'Daily summary'],
+		]) {
+			const option = document.createElement('option')
+			option.value = value
+			option.textContent = t('abonnieren', label)
+			digestMode.appendChild(option)
 		}
-		quietEnabled.addEventListener('change', setQuietVisible)
-		setQuietVisible()
-		container.append(quietTitle, quietOption, quietTimes, timezoneLabel, quietHint)
+		digestMode.value = rule?.digestMode || 'instant'
+		digestLabel.append(digestMode)
+		const digestTimeLabel = document.createElement('label')
+		digestTimeLabel.className = 'abonnieren-subscription-field'
+		digestTimeLabel.textContent = t('abonnieren', 'Daily email time')
+		const digestTime = document.createElement('input')
+		digestTime.type = 'time'
+		digestTime.value = rule?.digestTime || '08:00'
+		digestTimeLabel.append(digestTime)
+		const digestHint = document.createElement('p')
+		digestHint.className = 'abonnieren-subscription-description'
+		digestHint.textContent = t('abonnieren', 'Email summaries group up to 50 events per message. Nextcloud notifications remain immediate.')
+		const setScheduleVisible = () => {
+			quietTimes.hidden = !quietEnabled.checked
+			timezoneLabel.hidden = !quietEnabled.checked && digestMode.value === 'instant'
+			digestTimeLabel.hidden = digestMode.value !== 'daily'
+		}
+		quietEnabled.addEventListener('change', setScheduleVisible)
+		digestMode.addEventListener('change', setScheduleVisible)
+		setScheduleVisible()
+		container.append(quietTitle, quietOption, quietTimes, timezoneLabel, quietHint,
+			digestTitle, digestLabel, digestTimeLabel, digestHint)
 
 		const settingsTitle = document.createElement('h4')
 		settingsTitle.className = 'abonnieren-preferences-title'
@@ -250,6 +282,8 @@ class SubscriptionTab extends HTMLElement {
 				quietStart: quietEnabled.checked ? quietStart.value : '',
 				quietEnd: quietEnabled.checked ? quietEnd.value : '',
 				quietTimezone: quietTimezone.value.trim() || 'UTC',
+				digestMode: digestMode.value,
+				digestTime: digestTime.value,
 			})
 		})
 		this.replaceChildren(container)
