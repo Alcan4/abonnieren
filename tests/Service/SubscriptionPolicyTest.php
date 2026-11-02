@@ -18,7 +18,7 @@ use PHPUnit\Framework\TestCase;
 
 class SubscriptionPolicyTest extends TestCase {
 	/** @param list<array<string,mixed>> $rows */
-	private function service(array $rows): SubscriptionService {
+	private function service(array $rows, string $email = 'test@example.test'): SubscriptionService {
 		$db = $this->createMock(IDBConnection::class);
 		$qb = $this->createMock(IQueryBuilder::class);
 		$qb->method('select')->willReturnSelf();
@@ -39,7 +39,7 @@ class SubscriptionPolicyTest extends TestCase {
 		$root->method('getUserFolder')->willReturn($accessibleFolder);
 
 		$user = $this->createMock(IUser::class);
-		$user->method('getEMailAddress')->willReturn('test@example.test');
+		$user->method('getEMailAddress')->willReturn($email);
 		$users = $this->createMock(IUserManager::class);
 		$users->method('get')->willReturn($user);
 		return new SubscriptionService($db, $users, $root);
@@ -64,6 +64,7 @@ class SubscriptionPolicyTest extends TestCase {
 			'recursive' => 1,
 			'debounce_seconds' => $seconds,
 			'excluded_extensions' => $excluded,
+			'channel_mask' => SubscriptionService::CHANNEL_EMAIL,
 		];
 	}
 
@@ -101,4 +102,16 @@ class SubscriptionPolicyTest extends TestCase {
 			$this->file('document.pdf'), SubscriptionService::EVENT_MODIFICATION, 'alice');
 		self::assertSame(['bob' => 'test@example.test'], $emails);
 	}
+	public function testNotificationOnlySubscriptionDoesNotRequireEmail(): void {
+		$row = $this->row('alice', 10, 60);
+		$row['channel_mask'] = SubscriptionService::CHANNEL_NOTIFICATION;
+		$service = $this->service([$row], '');
+		$file = $this->file('document.pdf');
+
+		$policies = $service->getRecipientPoliciesForNode($file, SubscriptionService::EVENT_MODIFICATION);
+		self::assertSame(SubscriptionService::CHANNEL_NOTIFICATION, $policies['alice']['channelMask']);
+		self::assertSame('', $policies['alice']['email']);
+		self::assertSame([], $service->getRecipientEmailsForNode($file, SubscriptionService::EVENT_MODIFICATION));
+	}
+
 }

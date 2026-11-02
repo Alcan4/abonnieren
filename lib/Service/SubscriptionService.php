@@ -18,6 +18,9 @@ class SubscriptionService {
 	public const EVENT_DOWNLOAD = 8;
 	public const ALLOWED_EVENTS = 15;
 	public const DEBOUNCE_SECONDS = SubscriptionPreferences::DEFAULT_DEBOUNCE_SECONDS;
+	public const CHANNEL_EMAIL = 1;
+	public const CHANNEL_NOTIFICATION = 2;
+	public const ALLOWED_CHANNELS = 3;
 
 	public function __construct(
 		private IDBConnection $db,
@@ -26,8 +29,8 @@ class SubscriptionService {
 	) {
 	}
 
-	public function upsertRule(string $userId, int $nodeId, int $eventMask, bool $recursive, int $debounceSeconds = self::DEBOUNCE_SECONDS, string $excludedExtensions = ''): void {
-		$this->validateRule($userId, $nodeId, $eventMask);
+	public function upsertRule(string $userId, int $nodeId, int $eventMask, bool $recursive, int $debounceSeconds = self::DEBOUNCE_SECONDS, string $excludedExtensions = '', int $channelMask = self::CHANNEL_EMAIL): void {
+		$this->validateRule($userId, $nodeId, $eventMask, $channelMask);
 		$debounceSeconds = SubscriptionPreferences::validateDebounce($debounceSeconds);
 		$excludedExtensions = SubscriptionPreferences::normalizeExtensions($excludedExtensions);
 
@@ -47,6 +50,7 @@ class SubscriptionService {
 				'recursive' => $qb->createNamedParameter($recursive ? 1 : 0),
 				'debounce_seconds' => $qb->createNamedParameter($debounceSeconds),
 				'excluded_extensions' => $qb->createNamedParameter($excludedExtensions),
+				'channel_mask' => $qb->createNamedParameter($channelMask),
 				'created_at' => $qb->createNamedParameter($now),
 				'updated_at' => $qb->createNamedParameter($now),
 			]);
@@ -72,7 +76,7 @@ class SubscriptionService {
 
 	public function getRule(string $userId, int $nodeId): ?array {
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'created_at', 'updated_at')
+		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'created_at', 'updated_at')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
 			->andWhere($qb->expr()->eq('node_id', $qb->createNamedParameter($nodeId)));
@@ -86,7 +90,7 @@ class SubscriptionService {
 
 	public function getRulesByUser(string $userId): array {
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'created_at', 'updated_at')
+		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask', 'created_at', 'updated_at')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
 			->orderBy('updated_at', 'DESC');
@@ -102,7 +106,9 @@ class SubscriptionService {
 	public function getRecipientEmailsForNode(Node $node, int $event, ?string $actorUserId = null): array {
 		$emails = [];
 		foreach ($this->getRecipientPoliciesForNode($node, $event, $actorUserId) as $userId => $settings) {
-			$emails[$userId] = $settings['email'];
+			if (($settings['channelMask'] & self::CHANNEL_EMAIL) !== 0 && $settings['email'] !== '') {
+				$emails[$userId] = $settings['email'];
+			}
 		}
 		return $emails;
 	}
@@ -111,7 +117,7 @@ class SubscriptionService {
 	 * One winning rule per subscriber. The closest matching rule overrides
 	 * ancestor preferences, including when that rule excludes the extension.
 	 *
-	 * @return array<string,array{email:string,debounceSeconds:int,excludedExtensions:list<string>}>
+	 * @return array<string,array{email:string,debounceSeconds:int,excludedExtensions:list<string>,channelMask:int}>
 	 */
 	public function getRecipientPoliciesForNode(Node $node, int $event, ?string $actorUserId = null): array {
 		if (($event & self::ALLOWED_EVENTS) !== $event || $event < 1) {
@@ -137,7 +143,7 @@ class SubscriptionService {
 		}
 
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions')
+		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'channel_mask')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->in(
 				'node_id',
@@ -175,15 +181,23 @@ class SubscriptionService {
 			if (!is_int($distance) || (isset($selected[$userId]) && $distance >= $selected[$userId]['distance'])) {
 				continue;
 			}
-			$email = $this->userManager->get($userId)?->getEMailAddress();
-			if (is_string($email) && $email !== '') {
-				$selected[$userId] = [
-					'email' => $email,
-					'debounceSeconds' => (int)$row['debounce_seconds'],
-					'excludedExtensions' => SubscriptionPreferences::parseExtensions((string)$row['excluded_extensions']),
-					'distance' => $distance,
-				];
+			$user = $this->userManager->get($userId);
+			if ($user === null) {
+				continue;
 			}
+			$email = $user->getEMailAddress();
+			$email = is_string($email) ? $email : '';
+			$channels = (int)$row['channel_mask'];
+			if ($email === '' && ($channels & self::CHANNEL_NOTIFICATION) === 0) {
+				continue;
+			}
+			$selected[$userId] = [
+				'email' => $email,
+				'channelMask' => $channels,
+				'debounceSeconds' => (int)$row['debounce_seconds'],
+				'excludedExtensions' => SubscriptionPreferences::parseExtensions((string)$row['excluded_extensions']),
+				'distance' => $distance,
+			];
 		}
 
 		$recipients = [];
@@ -197,7 +211,7 @@ class SubscriptionService {
 		return $recipients;
 	}
 
-	private function validateRule(string $userId, int $nodeId, int $eventMask): void {
+	private function validateRule(string $userId, int $nodeId, int $eventMask, int $channelMask): void {
 		if ($nodeId < 1) {
 			throw new \InvalidArgumentException('Invalid node ID');
 		}
@@ -205,8 +219,11 @@ class SubscriptionService {
 			throw new \InvalidArgumentException('Invalid notification event mask');
 		}
 
+		if ($channelMask < 1 || ($channelMask & ~self::ALLOWED_CHANNELS) !== 0) {
+			throw new \InvalidArgumentException('Select at least one notification channel');
+		}
 		$email = $this->userManager->get($userId)?->getEMailAddress();
-		if (!is_string($email) || $email === '') {
+		if (($channelMask & self::CHANNEL_EMAIL) !== 0 && (!is_string($email) || $email === '')) {
 			throw new \InvalidArgumentException('No email address is configured for the authenticated user');
 		}
 	}
@@ -219,6 +236,7 @@ class SubscriptionService {
 			'recursive' => (bool)$row['recursive'],
 			'debounceSeconds' => (int)$row['debounce_seconds'],
 			'excludedExtensions' => SubscriptionPreferences::parseExtensions((string)$row['excluded_extensions']),
+			'channelMask' => (int)$row['channel_mask'],
 			'createdAt' => (int)$row['created_at'],
 			'updatedAt' => (int)$row['updated_at'],
 		];

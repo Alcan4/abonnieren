@@ -102,9 +102,14 @@ class SubscriptionController extends Controller {
 			return new DataResponse(['success' => false, 'message' => 'Invalid suppression window'], Http::STATUS_BAD_REQUEST);
 		}
 		$excludedExtensions = (string)$this->request->getParam('excludedExtensions', '');
+		$channelsRaw = (string)$this->request->getParam('channelMask', (string)SubscriptionService::CHANNEL_EMAIL);
+		if (!ctype_digit($channelsRaw)) {
+			return new DataResponse(['success' => false, 'message' => 'Invalid notification channels'], Http::STATUS_BAD_REQUEST);
+		}
 
 		try {
-			$this->subscriptionService->upsertRule($userId, $nodeId, $eventMask, $recursive, (int)$debounceRaw, $excludedExtensions);
+			$this->subscriptionService->upsertRule($userId, $nodeId, $eventMask, $recursive,
+				(int)$debounceRaw, $excludedExtensions, (int)$channelsRaw);
 		} catch (\InvalidArgumentException $e) {
 			return new DataResponse(['success' => false, 'message' => $e->getMessage()], Http::STATUS_BAD_REQUEST);
 		}
