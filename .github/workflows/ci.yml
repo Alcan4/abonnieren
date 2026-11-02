@@ -217,14 +217,11 @@ jobs:
             $q->executeStatement();
           '
 
-      - name: Disable unrelated Viewer source fixture on Nextcloud 34
-        if: matrix.nextcloud == '34'
-        run: php occ app:disable viewer
-
       - name: Upgrade local app code and migrate existing database
         run: |
+          php occ app:disable abonnieren
           git -C apps/abonnieren checkout --detach "$(cat /tmp/abonnieren-new-sha)"
-          php occ upgrade --no-interaction
+          php occ app:enable abonnieren
           php -r '
             require "lib/base.php";
             $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
