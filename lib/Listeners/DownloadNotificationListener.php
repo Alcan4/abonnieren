@@ -8,6 +8,7 @@ use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Activity\Provider;
 use OCA\Abonnieren\Service\RecipientL10N;
 use OCA\Abonnieren\Service\RecipientMailDispatcher;
+use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
@@ -23,8 +24,8 @@ use OCP\ICacheFactory;
 use OCP\IL10N;
 use OCP\IRequest;
 use OCP\IURLGenerator;
-use OCP\IUserSession;
 use OCP\Mail\IMailer;
+use OCP\IUserSession;
 use OCP\Share\IShare;
 use Psr\Log\LoggerInterface;
 
@@ -35,6 +36,7 @@ class DownloadNotificationListener implements IEventListener {
 	private ICache $cache;
 
 	public function __construct(
+		private MailOutbox $outbox,
 		private IMailer $mailer,
 		private RecipientL10N $recipientL10n,
 		private LoggerInterface $logger,
@@ -174,7 +176,7 @@ class DownloadNotificationListener implements IEventListener {
 
 			$this->mailDispatcher->deliver(
 				$recipients,
-				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $isFolder, $isPublicLink, $path, $token): void {
+				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink, $path, $token): void {
 					$l10n = $this->recipientL10n->forUser($userId);
 					$subject = $isFolder
 						? ($isPublicLink
@@ -191,8 +193,6 @@ class DownloadNotificationListener implements IEventListener {
 							? $l10n->t('A file was downloaded through one of your public share links.')
 							: $l10n->t('A file covered by one of your subscriptions was downloaded.'));
 
-					$message = $this->mailer->createMessage();
-					$message->setSubject($subject);
 					$template = $this->mailer->createEMailTemplate('abonnieren_download');
 					$template->setSubject($subject);
 					$template->addHeader();
@@ -229,16 +229,14 @@ class DownloadNotificationListener implements IEventListener {
 						);
 					}
 					$template->addFooter();
-					$message->setBody($template->renderText(), 'text/plain');
-					$message->setHtmlBody($template->renderHtml());
-					$message->setTo([$email]);
-					$this->mailer->send($message);
+					$this->outbox->enqueue($userId, $subscriptionNode, SubscriptionService::EVENT_DOWNLOAD,
+						$actorUserId, false, $subject, $template->renderText(), $template->renderHtml());
 				},
-				'Could not send download notification',
+				'Could not queue download notification',
 				['shareId' => $share !== null ? (int)$share->getId() : null, 'nodeId' => (int)$node->getId()],
 			);
 		} catch (\Throwable $e) {
-			$this->logger->error('Could not send download notification', [
+			$this->logger->error('Could not queue download notification', [
 				'app' => 'abonnieren',
 				'shareId' => $share !== null ? (int)$share->getId() : null,
 				'nodeId' => (int)$node->getId(),

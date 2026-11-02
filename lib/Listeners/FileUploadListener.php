@@ -8,6 +8,7 @@ use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Activity\Provider;
 use OCA\Abonnieren\Service\RecipientL10N;
 use OCA\Abonnieren\Service\RecipientMailDispatcher;
+use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
@@ -32,6 +33,7 @@ class FileUploadListener implements IEventListener {
 	private ICache $cache;
 
 	public function __construct(
+		private MailOutbox $outbox,
 		private IMailer $mailer,
 		private RecipientL10N $recipientL10n,
 		private LoggerInterface $logger,
@@ -99,7 +101,7 @@ class FileUploadListener implements IEventListener {
 			$actorUserId,
 		);
 		if ($recipients !== []) {
-			$this->sendNotification($subscriptionNode, $recipients, $eventName, $isPublicLink);
+			$this->queueNotification($subscriptionNode, $recipients, $eventName, $eventBit, $actorUserId, $isPublicLink);
 			$activitySubject = match ($eventName) {
 				'created' => Provider::SUBJECT_CREATED,
 				'deleted' => Provider::SUBJECT_DELETED,
@@ -119,20 +121,18 @@ class FileUploadListener implements IEventListener {
 	}
 
 	/** @param array<string, string> $recipients */
-	private function sendNotification(Node $node, array $recipients, string $eventName, bool $publicLinkActivity): void {
+	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity): void {
 		try {
 			$isFolder = $node instanceof Folder;
 			$path = $this->getUserRelativePath($node);
 
 			$this->mailDispatcher->deliver(
 				$recipients,
-				function (string $userId, string $email) use ($node, $eventName, $isFolder, $path, $publicLinkActivity): void {
+				function (string $userId, string $email) use ($node, $eventName, $eventBit, $actorUserId, $isFolder, $path, $publicLinkActivity): void {
 					$l10n = $this->recipientL10n->forUser($userId);
 					$subject = $this->getSubject($l10n, $isFolder, $eventName);
 					$description = $this->getDescription($l10n, $publicLinkActivity);
 
-					$message = $this->mailer->createMessage();
-					$message->setSubject($subject);
 					$template = $this->mailer->createEMailTemplate('abonnieren_file_event');
 					$template->setSubject($subject);
 					$template->addHeader();
@@ -155,16 +155,14 @@ class FileUploadListener implements IEventListener {
 						);
 					}
 					$template->addFooter();
-					$message->setBody($template->renderText(), 'text/plain');
-					$message->setHtmlBody($template->renderHtml());
-					$message->setTo([$email]);
-					$this->mailer->send($message);
+					$this->outbox->enqueue($userId, $node, $eventBit, $actorUserId, $eventName === 'deleted',
+						$subject, $template->renderText(), $template->renderHtml());
 				},
-				'Could not send file event notification',
+				'Could not queue file event notification',
 				['nodeId' => (int)$node->getId(), 'event' => $eventName],
 			);
 		} catch (\Throwable $e) {
-			$this->logger->error('Could not send file event notification', [
+			$this->logger->error('Could not queue file event notification', [
 				'app' => 'abonnieren',
 				'nodeId' => (int)$node->getId(),
 				'event' => $eventName,
