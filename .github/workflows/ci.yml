@@ -174,7 +174,8 @@ jobs:
       - name: Install original 1.1.2 app and create a legacy subscription
         run: |
           git -C apps/abonnieren rev-parse HEAD > /tmp/abonnieren-new-sha
-          git -C apps/abonnieren checkout --detach origin/main
+          # Immutable repository state containing Abonnieren 1.1.2.
+          git -C apps/abonnieren checkout --detach fd3a18e3271c422fb8867b5fcb00aef59410e864
           mkdir -p data
           php occ maintenance:install --database=sqlite --admin-user=admin --admin-pass=admin
           php occ app:enable abonnieren
