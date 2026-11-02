@@ -38,7 +38,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        nextcloud: ['34', '35']
+        include:
+          - nextcloud: '34'
+            ref: v34.0.5
+          - nextcloud: '35'
+            ref: stable35
     steps:
       - name: Checkout Nextcloud ${{ matrix.nextcloud }}
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -46,7 +50,7 @@ jobs:
           persist-credentials: false
           submodules: true
           repository: nextcloud/server
-          ref: stable${{ matrix.nextcloud }}
+          ref: ${{ matrix.ref }}
 
       - name: Checkout Abonnieren
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -153,7 +157,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        nextcloud: ['34', '35']
+        include:
+          - nextcloud: '34'
+            ref: v34.0.5
+          - nextcloud: '35'
+            ref: stable35
     steps:
       - name: Checkout Nextcloud ${{ matrix.nextcloud }}
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -161,7 +169,7 @@ jobs:
           persist-credentials: false
           submodules: true
           repository: nextcloud/server
-          ref: stable${{ matrix.nextcloud }}
+          ref: ${{ matrix.ref }}
 
       - name: Checkout Abonnieren full history
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
