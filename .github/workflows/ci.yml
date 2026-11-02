@@ -1,0 +1,89 @@
+name: Abonnieren checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  php-lint:
+    name: PHP syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@ccf2c627fe61b1b4d924adfcbd19d661a18133a0 # v2.35.2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: Lint PHP sources
+        run: find appinfo lib tests -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Validate app metadata XML
+        run: |
+          php -r '$xml = simplexml_load_file("appinfo/info.xml"); if ($xml === false) { exit(1); }'
+
+  phpunit-nextcloud35:
+    name: PHPUnit (Nextcloud 35)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Nextcloud 35
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          submodules: true
+          repository: nextcloud/server
+          ref: stable35
+
+      - name: Checkout Abonnieren
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          path: apps/abonnieren
+
+      - name: Set up PHP 8.3
+        uses: shivammathur/setup-php@ccf2c627fe61b1b4d924adfcbd19d661a18133a0 # v2.35.2
+        with:
+          php-version: '8.3'
+          extensions: bz2, ctype, curl, dom, fileinfo, gd, iconv, intl, mbstring, openssl, pcntl, pdo_sqlite, sqlite3, xml, xmlreader, xmlwriter, zip
+          coverage: none
+          ini-file: development
+          ini-values: disable_functions=
+
+      - name: Install app test dependencies
+        working-directory: apps/abonnieren
+        run: |
+          # Upstream composer.json has authors[0].homepage = ""; Composer rejects it
+          # when modifying dependencies. Fix only the ephemeral CI checkout.
+          php -r '$file = "composer.json"; $json = json_decode(file_get_contents($file), true, 512, JSON_THROW_ON_ERROR); unset($json["authors"][0]["homepage"]); file_put_contents($file, json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");'
+          # Upstream composer.json pins PHP 8.2 although this job uses PHP 8.3.
+          # Match the runner's patched PHP in this temporary checkout.
+          composer config platform.php 8.3.36
+          composer remove nextcloud/ocp --dev --no-scripts --no-interaction
+          composer install --prefer-dist --no-interaction
+
+      - name: Set up Nextcloud test instance
+        run: |
+          mkdir -p data
+          php occ maintenance:install --database=sqlite --admin-user=admin --admin-pass=admin
+          php occ app:enable abonnieren
+
+      - name: Run PHPUnit regression tests
+        working-directory: apps/abonnieren
+        run: composer run test:unit
+
+      - name: Show test-server logs on failure
+        if: failure()
+        run: |
+          if test -f data/nextcloud.log; then
+            tail -n 100 data/nextcloud.log
+          fi
