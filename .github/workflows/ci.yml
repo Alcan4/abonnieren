@@ -87,3 +87,46 @@ jobs:
           if test -f data/nextcloud.log; then
             tail -n 100 data/nextcloud.log
           fi
+
+  frontend-build:
+    name: Frontend lint and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint JavaScript
+        run: pnpm run lint
+
+      - name: Build production assets
+        run: pnpm run build
+
+      - name: Package the app for TestEnV
+        run: |
+          mkdir -p build/abonnieren
+          cp -a appinfo lib js css img l10n templates LICENSE README.md build/abonnieren/
+          cd build
+          zip -qr abonnieren-TestEnV.zip abonnieren
+
+      - name: Upload TestEnV package
+        uses: actions/upload-artifact@v4
+        with:
+          name: abonnieren-TestEnV
+          path: build/abonnieren-TestEnV.zip
+          if-no-files-found: error
+          retention-days: 14

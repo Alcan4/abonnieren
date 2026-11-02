@@ -97,8 +97,14 @@ class SubscriptionController extends Controller {
 			$this->request->getParam('recursive', false),
 			FILTER_VALIDATE_BOOLEAN,
 		);
+		$debounceRaw = (string)$this->request->getParam('debounceSeconds', (string)SubscriptionService::DEBOUNCE_SECONDS);
+		if (!ctype_digit($debounceRaw)) {
+			return new DataResponse(['success' => false, 'message' => 'Invalid suppression window'], Http::STATUS_BAD_REQUEST);
+		}
+		$excludedExtensions = (string)$this->request->getParam('excludedExtensions', '');
+
 		try {
-			$this->subscriptionService->upsertRule($userId, $nodeId, $eventMask, $recursive);
+			$this->subscriptionService->upsertRule($userId, $nodeId, $eventMask, $recursive, (int)$debounceRaw, $excludedExtensions);
 		} catch (\InvalidArgumentException $e) {
 			return new DataResponse(['success' => false, 'message' => $e->getMessage()], Http::STATUS_BAD_REQUEST);
 		}

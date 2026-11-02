@@ -124,6 +124,41 @@ class SubscriptionTab extends HTMLElement {
 			container.append(separator, label)
 		}
 
+		const settingsTitle = document.createElement('h4')
+		settingsTitle.className = 'abonnieren-preferences-title'
+		settingsTitle.textContent = t('abonnieren', 'Notification filters')
+
+		const delayLabel = document.createElement('label')
+		delayLabel.className = 'abonnieren-subscription-field'
+		delayLabel.textContent = t('abonnieren', 'Suppress repeated notifications for')
+		const delay = document.createElement('select')
+		for (const [seconds, caption] of [
+			[0, 'Off'], [15, '15 seconds'], [30, '30 seconds'], [60, '1 minute'],
+			[120, '2 minutes'], [300, '5 minutes'], [600, '10 minutes'],
+			[1800, '30 minutes'], [3600, '1 hour'],
+		]) {
+			const option = document.createElement('option')
+			option.value = String(seconds)
+			option.textContent = t('abonnieren', caption)
+			delay.appendChild(option)
+		}
+		delay.value = String(rule?.debounceSeconds ?? 600)
+		delayLabel.append(delay)
+
+		const extensionsLabel = document.createElement('label')
+		extensionsLabel.className = 'abonnieren-subscription-field'
+		extensionsLabel.textContent = t('abonnieren', 'Exclude file extensions (comma-separated)')
+		const extensions = document.createElement('input')
+		extensions.type = 'text'
+		extensions.placeholder = 'tmp, log, .bak, tar.gz'
+		extensions.value = (rule?.excludedExtensions || []).join(', ')
+		extensions.maxLength = 500
+		extensionsLabel.append(extensions)
+		const help = document.createElement('p')
+		help.className = 'abonnieren-subscription-description'
+		help.textContent = t('abonnieren', 'Excluded file types do not generate notifications for this subscription. Folder events are unaffected.')
+		container.append(settingsTitle, delayLabel, extensionsLabel, help)
+
 		const feedback = document.createElement('p')
 		feedback.className = 'abonnieren-subscription-feedback'
 		const actions = document.createElement('div')
@@ -144,18 +179,21 @@ class SubscriptionTab extends HTMLElement {
 		save.addEventListener('click', () => {
 			let mask = 0
 			checkboxes.forEach((checkbox, bit) => { if (checkbox.checked) mask |= bit })
-			this.saveRule(mask, Boolean(recursive?.checked), save, null, feedback)
+			this.saveRule(mask, Boolean(recursive?.checked), save, null, feedback, {
+				debounceSeconds: Number(delay.value),
+				excludedExtensions: extensions.value,
+			})
 		})
 		this.replaceChildren(container)
 	}
 
-	async saveRule(eventMask, recursive, save, second, feedback) {
+	async saveRule(eventMask, recursive, save, second, feedback, preferences = {}) {
 		save.disabled = true
 		if (second) second.disabled = true
 		feedback.textContent = ''
 		try {
 			await this.request(eventMask === 0 ? 'delete_rule' : 'save_rule', {
-				nodeId: this.getNodeId(), eventMask, recursive,
+				nodeId: this.getNodeId(), eventMask, recursive, ...preferences,
 			})
 			this._loadedNodeId = null
 			feedback.className = 'abonnieren-subscription-feedback success'

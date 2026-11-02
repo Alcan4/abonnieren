@@ -17,7 +17,7 @@ class SubscriptionService {
 	public const EVENT_DELETION = 4;
 	public const EVENT_DOWNLOAD = 8;
 	public const ALLOWED_EVENTS = 15;
-	public const DEBOUNCE_SECONDS = 600;
+	public const DEBOUNCE_SECONDS = SubscriptionPreferences::DEFAULT_DEBOUNCE_SECONDS;
 
 	public function __construct(
 		private IDBConnection $db,
@@ -26,8 +26,10 @@ class SubscriptionService {
 	) {
 	}
 
-	public function upsertRule(string $userId, int $nodeId, int $eventMask, bool $recursive): void {
+	public function upsertRule(string $userId, int $nodeId, int $eventMask, bool $recursive, int $debounceSeconds = self::DEBOUNCE_SECONDS, string $excludedExtensions = ''): void {
 		$this->validateRule($userId, $nodeId, $eventMask);
+		$debounceSeconds = SubscriptionPreferences::validateDebounce($debounceSeconds);
+		$excludedExtensions = SubscriptionPreferences::normalizeExtensions($excludedExtensions);
 
 		$qb = $this->db->getQueryBuilder();
 		$qb->delete('abonnieren_object_rules')
@@ -43,6 +45,8 @@ class SubscriptionService {
 				'node_id' => $qb->createNamedParameter($nodeId),
 				'event_mask' => $qb->createNamedParameter($eventMask),
 				'recursive' => $qb->createNamedParameter($recursive ? 1 : 0),
+				'debounce_seconds' => $qb->createNamedParameter($debounceSeconds),
+				'excluded_extensions' => $qb->createNamedParameter($excludedExtensions),
 				'created_at' => $qb->createNamedParameter($now),
 				'updated_at' => $qb->createNamedParameter($now),
 			]);
@@ -68,7 +72,7 @@ class SubscriptionService {
 
 	public function getRule(string $userId, int $nodeId): ?array {
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'created_at', 'updated_at')
+		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'created_at', 'updated_at')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
 			->andWhere($qb->expr()->eq('node_id', $qb->createNamedParameter($nodeId)));
@@ -82,7 +86,7 @@ class SubscriptionService {
 
 	public function getRulesByUser(string $userId): array {
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'created_at', 'updated_at')
+		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions', 'created_at', 'updated_at')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->eq('user_id', $qb->createNamedParameter($userId)))
 			->orderBy('updated_at', 'DESC');
@@ -96,6 +100,20 @@ class SubscriptionService {
 
 	/** @return array<string, string> Recipient e-mail addresses keyed by user id. */
 	public function getRecipientEmailsForNode(Node $node, int $event, ?string $actorUserId = null): array {
+		$emails = [];
+		foreach ($this->getRecipientPoliciesForNode($node, $event, $actorUserId) as $userId => $settings) {
+			$emails[$userId] = $settings['email'];
+		}
+		return $emails;
+	}
+
+	/**
+	 * One winning rule per subscriber. The closest matching rule overrides
+	 * ancestor preferences, including when that rule excludes the extension.
+	 *
+	 * @return array<string,array{email:string,debounceSeconds:int,excludedExtensions:list<string>}>
+	 */
+	public function getRecipientPoliciesForNode(Node $node, int $event, ?string $actorUserId = null): array {
 		if (($event & self::ALLOWED_EVENTS) !== $event || $event < 1) {
 			return [];
 		}
@@ -119,7 +137,7 @@ class SubscriptionService {
 		}
 
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('user_id', 'node_id', 'event_mask', 'recursive')
+		$qb->select('user_id', 'node_id', 'event_mask', 'recursive', 'debounce_seconds', 'excluded_extensions')
 			->from('abonnieren_object_rules')
 			->where($qb->expr()->in(
 				'node_id',
@@ -131,7 +149,7 @@ class SubscriptionService {
 
 		$exactId = $nodeIds[0];
 		$directParentId = $nodeIds[1] ?? null;
-		$recipients = [];
+		$selected = [];
 		foreach ($rows as $row) {
 			$userId = (string)$row['user_id'];
 			$ruleNodeId = (int)$row['node_id'];
@@ -153,12 +171,29 @@ class SubscriptionService {
 				}
 			}
 
+			$distance = array_search($ruleNodeId, $nodeIds, true);
+			if (!is_int($distance) || (isset($selected[$userId]) && $distance >= $selected[$userId]['distance'])) {
+				continue;
+			}
 			$email = $this->userManager->get($userId)?->getEMailAddress();
 			if (is_string($email) && $email !== '') {
-				$recipients[$userId] = $email;
+				$selected[$userId] = [
+					'email' => $email,
+					'debounceSeconds' => (int)$row['debounce_seconds'],
+					'excludedExtensions' => SubscriptionPreferences::parseExtensions((string)$row['excluded_extensions']),
+					'distance' => $distance,
+				];
 			}
 		}
 
+		$recipients = [];
+		foreach ($selected as $userId => $settings) {
+			if (SubscriptionPreferences::isExcluded($node, $settings['excludedExtensions'])) {
+				continue;
+			}
+			unset($settings['distance']);
+			$recipients[$userId] = $settings;
+		}
 		return $recipients;
 	}
 
@@ -182,6 +217,8 @@ class SubscriptionService {
 			'nodeId' => (int)$row['node_id'],
 			'eventMask' => (int)$row['event_mask'],
 			'recursive' => (bool)$row['recursive'],
+			'debounceSeconds' => (int)$row['debounce_seconds'],
+			'excludedExtensions' => SubscriptionPreferences::parseExtensions((string)$row['excluded_extensions']),
 			'createdAt' => (int)$row['created_at'],
 			'updatedAt' => (int)$row['updated_at'],
 		];

@@ -88,21 +88,28 @@ class FileUploadListener implements IEventListener {
 			'deleted' => 'deletion',
 			default => 'modification',
 		};
-		$cacheKey = implode(':', [$category, (string)$node->getId(), $actorKey]);
-		if ($this->cache->get($cacheKey) === true) {
-			return;
-		}
+		$cacheKeyBase = implode(':', [$category, (string)$node->getId(), $actorKey]);
 
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
-		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
+		$policies = $this->subscriptionService->getRecipientPoliciesForNode(
 			$subscriptionNode,
 			$eventBit,
 			$actorUserId,
 		);
+		$recipients = [];
+		foreach ($policies as $userId => $policy) {
+			if ($policy['debounceSeconds'] > 0 && $this->cache->get($cacheKeyBase . ':' . $userId) === true) {
+				continue;
+			}
+			$recipients[$userId] = $policy['email'];
+		}
 		if ($recipients !== []) {
-			$allQueued = $this->queueNotification($subscriptionNode, $recipients, $eventName, $eventBit, $actorUserId, $isPublicLink);
-			if ($allQueued) {
-				$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
+			$queuedUserIds = $this->queueNotification($subscriptionNode, $recipients, $eventName, $eventBit, $actorUserId, $isPublicLink);
+			foreach ($queuedUserIds as $userId) {
+				$seconds = $policies[$userId]['debounceSeconds'];
+				if ($seconds > 0) {
+					$this->cache->set($cacheKeyBase . ':' . $userId, true, $seconds);
+				}
 			}
 			$activitySubject = match ($eventName) {
 				'created' => Provider::SUBJECT_CREATED,
@@ -113,7 +120,7 @@ class FileUploadListener implements IEventListener {
 				$activitySubject,
 				$subscriptionNode,
 				$actorUserId,
-				array_keys($recipients),
+				$queuedUserIds,
 			);
 		}
 
@@ -123,7 +130,8 @@ class FileUploadListener implements IEventListener {
 	}
 
 	/** @param array<string, string> $recipients */
-	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity): bool {
+	/** @return list<string> User IDs whose notification was persisted. */
+	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity): array {
 		try {
 			$isFolder = $node instanceof Folder;
 			$path = $this->getUserRelativePath($node);
@@ -163,7 +171,7 @@ class FileUploadListener implements IEventListener {
 				'Could not queue file event notification',
 				['nodeId' => (int)$node->getId(), 'event' => $eventName],
 			);
-			return count($queuedUserIds) === count($recipients);
+			return $queuedUserIds;
 		} catch (\Throwable $e) {
 			$this->logger->error('Could not queue file event notification', [
 				'app' => 'abonnieren',
@@ -171,7 +179,7 @@ class FileUploadListener implements IEventListener {
 				'event' => $eventName,
 				'exception' => $e,
 			]);
-			return false;
+			return [];
 		}
 	}
 

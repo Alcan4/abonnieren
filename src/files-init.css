@@ -10,3 +10,8 @@
 .abonnieren-subscription-feedback.error,
 .abonnieren-subscription-error { color: var(--color-error); }
 .abonnieren-subscription-state { color: var(--color-text-maxcontrast); }
+
+.abonnieren-preferences-title { font-size: 15px; margin: 18px 0 8px; }
+.abonnieren-subscription-field { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.abonnieren-subscription-field input,
+.abonnieren-subscription-field select { width: 100%; max-width: 100%; min-height: 34px; box-sizing: border-box; }
