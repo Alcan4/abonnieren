@@ -293,6 +293,22 @@ class SubscriptionTab extends HTMLElement {
 		help.className = 'abonnieren-subscription-description'
 		help.textContent = t('abonnieren', 'Excluded file types do not generate notifications for this subscription. Folder events are unaffected.')
 		container.append(settingsTitle, delayLabel, extensionsLabel, help)
+		let excludedFoldersInput = null
+		if (this.isFolder()) {
+			const excludedFoldersLabel = document.createElement('label')
+			excludedFoldersLabel.className = 'abonnieren-subscription-field'
+			excludedFoldersLabel.textContent = t('abonnieren', 'Exclude subfolders (relative paths, comma-separated)')
+			excludedFoldersInput = document.createElement('input')
+			excludedFoldersInput.type = 'text'
+			excludedFoldersInput.maxLength = 1000
+			excludedFoldersInput.placeholder = 'Archive, Projects/Drafts'
+			excludedFoldersInput.value = (rule?.excludedFolders || []).join(', ')
+			excludedFoldersLabel.append(excludedFoldersInput)
+			const excludedFoldersHelp = document.createElement('p')
+			excludedFoldersHelp.className = 'abonnieren-subscription-description'
+			excludedFoldersHelp.textContent = t('abonnieren', 'Exclude a folder and all its descendants. Paths are case-sensitive, relative to this subscribed folder.')
+			container.append(excludedFoldersLabel, excludedFoldersHelp)
+		}
 
 		const feedback = document.createElement('p')
 		feedback.className = 'abonnieren-subscription-feedback'
@@ -317,6 +333,7 @@ class SubscriptionTab extends HTMLElement {
 			this.saveRule(mask, Boolean(recursive?.checked), save, null, feedback, {
 				debounceSeconds: Number(delay.value),
 				excludedExtensions: extensions.value,
+				excludedFolders: excludedFoldersInput?.value || '',
 				channelMask: Number(emailChannel.checked) + 2 * Number(nativeChannel.checked),
 				quietStart: quietEnabled.checked ? quietStart.value : '',
 				quietEnd: quietEnabled.checked ? quietEnd.value : '',
