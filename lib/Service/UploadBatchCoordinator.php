@@ -23,30 +23,41 @@ final class UploadBatchCoordinator {
 	 */
 	public function add(string $recipient, string $actor, int $parentId, int $now, callable $persist): array {
 		$scopeKey = UploadBatch::scopeKey($recipient, $actor, $parentId);
+		// Initialize the scope before opening our transaction. PostgreSQL
+		// aborts the *entire transaction* after a duplicate-key insert, even
+		// when the constraint exception is caught. Doing this in autocommit
+		// mode allows concurrent uploaders to race safely on the unique key.
+		// Use the query builder to honor Nextcloud's configured table prefix.
+		try {
+			$insert = $this->db->getQueryBuilder();
+			$insert->insert(self::SCOPES)->values([
+				'scope_key' => $insert->createNamedParameter($scopeKey),
+				'batch_key' => $insert->createNamedParameter(''),
+				'started_at' => $insert->createNamedParameter(0),
+				'last_at' => $insert->createNamedParameter(0),
+				'due_at' => $insert->createNamedParameter(0),
+				'item_count' => $insert->createNamedParameter(0),
+			]);
+			$insert->executeStatement();
+		} catch (\OCP\DB\Exception $e) {
+			if (!in_array($e->getReason(), [
+				\OCP\DB\Exception::REASON_CONSTRAINT_VIOLATION,
+				\OCP\DB\Exception::REASON_UNIQUE_CONSTRAINT_VIOLATION,
+			], true)) {
+				throw $e;
+			}
+		}
+
 		$this->db->beginTransaction();
 		try {
-			// Use Nextcloud's query builder so the configured DB table prefix
-			// is applied. IDBConnection::insertIfNotExist() works on raw table
-			// names and would otherwise target a missing unprefixed table.
-			try {
-				$insert = $this->db->getQueryBuilder();
-				$insert->insert(self::SCOPES)->values([
-					'scope_key' => $insert->createNamedParameter($scopeKey),
-					'batch_key' => $insert->createNamedParameter(''),
-					'started_at' => $insert->createNamedParameter(0),
-					'last_at' => $insert->createNamedParameter(0),
-					'due_at' => $insert->createNamedParameter(0),
-					'item_count' => $insert->createNamedParameter(0),
-				]);
-				$insert->executeStatement();
-			} catch (\OCP\DB\Exception $e) {
-				// A simultaneous uploader may have already created the scope.
-				if (!in_array($e->getReason(), [
-					\OCP\DB\Exception::REASON_CONSTRAINT_VIOLATION,
-					\OCP\DB\Exception::REASON_UNIQUE_CONSTRAINT_VIOLATION,
-				], true)) {
-					throw $e;
-				}
+			if ($this->db->getDatabaseProvider() === IDBConnection::PLATFORM_SQLITE) {
+				// SQLite has no SELECT FOR UPDATE. Acquire its serialized writer
+				// lock *before* reading the current scope and deadline.
+				$lock = $this->db->getQueryBuilder();
+				$lock->update(self::SCOPES)
+					->set('scope_key', $lock->createNamedParameter($scopeKey))
+					->where($lock->expr()->eq('scope_key', $lock->createNamedParameter($scopeKey)));
+				$lock->executeStatement();
 			}
 
 			$qb = $this->db->getQueryBuilder();

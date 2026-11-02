@@ -1,0 +1,149 @@
+name: Database integration (Nextcloud 35)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  database-integration:
+    name: PHPUnit (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: MariaDB 11.4
+            driver: mysql
+            image: mariadb:11.4
+            port: 3306
+            health: healthcheck.sh --connect --innodb_initialized
+          - name: PostgreSQL 16
+            driver: pgsql
+            image: postgres:16
+            port: 5432
+            health: pg_isready -U nextcloud -d nextcloud
+    services:
+      database:
+        image: ${{ matrix.image }}
+        env:
+          MYSQL_ROOT_PASSWORD: root-test-only
+          MYSQL_DATABASE: nextcloud
+          MYSQL_USER: nextcloud
+          MYSQL_PASSWORD: test-only-password
+          POSTGRES_DB: nextcloud
+          POSTGRES_USER: nextcloud
+          POSTGRES_PASSWORD: test-only-password
+        ports:
+          - ${{ matrix.port }}:${{ matrix.port }}
+        options: >-
+          --health-cmd="${{ matrix.health }}"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - name: Checkout Nextcloud 35
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          submodules: true
+          repository: nextcloud/server
+          ref: stable35
+
+      - name: Checkout Abonnieren
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          path: apps/abonnieren
+
+      - name: Set up PHP 8.3 and SQL drivers
+        uses: shivammathur/setup-php@ccf2c627fe61b1b4d924adfcbd19d661a18133a0 # v2.35.2
+        with:
+          php-version: '8.3'
+          extensions: bz2, ctype, curl, dom, fileinfo, gd, iconv, intl, mbstring, mysqli, openssl, pcntl, pdo_mysql, pdo_pgsql, pgsql, xml, xmlreader, xmlwriter, zip
+          coverage: none
+          ini-file: development
+          ini-values: disable_functions=
+
+      - name: Install the original app 1.1.2 and seed a subscription
+        run: |
+          git -C apps/abonnieren rev-parse HEAD > /tmp/new-abonnieren-revision
+          git -C apps/abonnieren checkout --detach origin/main
+          mkdir -p data
+          php occ maintenance:install \
+            --database="${{ matrix.driver }}" \
+            --database-host="127.0.0.1:${{ matrix.port }}" \
+            --database-name=nextcloud \
+            --database-user=nextcloud \
+            --database-pass=test-only-password \
+            --admin-user=admin \
+            --admin-pass=admin-test-only
+          php occ app:enable abonnieren
+          php -r '
+            require "lib/base.php";
+            $db = \OC::$server->get(\OCP\IDBConnection::class);
+            $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
+            if (($versions["abonnieren"] ?? null) !== "1.1.2") {
+              throw new \RuntimeException("Legacy app version incorrect");
+            }
+            $q = $db->getQueryBuilder();
+            $q->insert("abonnieren_object_rules")->values([
+              "user_id" => $q->createNamedParameter("ci_legacy"),
+              "node_id" => $q->createNamedParameter(991234),
+              "event_mask" => $q->createNamedParameter(2),
+              "recursive" => $q->createNamedParameter(1),
+              "created_at" => $q->createNamedParameter(time()),
+              "updated_at" => $q->createNamedParameter(time()),
+            ]);
+            $q->executeStatement();
+          '
+
+      - name: Upgrade app to the checked-out development revision
+        run: |
+          git -C apps/abonnieren checkout --detach "$(cat /tmp/new-abonnieren-revision)"
+          php occ upgrade --no-interaction
+          php -r '
+            require "lib/base.php";
+            $db = \OC::$server->get(\OCP\IDBConnection::class);
+            $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
+            if (($versions["abonnieren"] ?? null) !== "1.1.12") {
+              throw new \RuntimeException("App did not upgrade to 1.1.12");
+            }
+            $q = $db->getQueryBuilder();
+            $q->select("*")->from("abonnieren_object_rules")
+              ->where($q->expr()->eq("user_id", $q->createNamedParameter("ci_legacy")));
+            $res = $q->executeQuery();
+            $row = $res->fetch();
+            $res->closeCursor();
+            if (!is_array($row) || (int)$row["node_id"] !== 991234
+              || (int)$row["channel_mask"] !== 1
+              || (int)$row["expires_at"] !== 0
+              || (string)($row["excluded_folders"] ?? "") !== "") {
+              throw new \RuntimeException("Legacy subscription was damaged by upgrade");
+            }
+            echo "Database upgrade and original subscription verified\n";
+          '
+
+      - name: Install app test dependencies
+        working-directory: apps/abonnieren
+        run: |
+          php -r '$file = "composer.json"; $json = json_decode(file_get_contents($file), true, 512, JSON_THROW_ON_ERROR); unset($json["authors"][0]["homepage"]); file_put_contents($file, json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");'
+          composer config platform.php 8.3.36
+          composer remove nextcloud/ocp --dev --no-scripts --no-interaction
+          composer install --prefer-dist --no-interaction
+
+      - name: Run full PHPUnit including real database integration
+        working-directory: apps/abonnieren
+        run: composer run test:unit
+
+      - name: Show sanitized server log tail on failure
+        if: failure()
+        run: |
+          if test -f data/nextcloud.log; then
+            tail -n 70 data/nextcloud.log
+          fi
