@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace OCA\Abonnieren\Service;
 
 use OCA\Abonnieren\BackgroundJob\DeliverMailJob;
+use OCA\Abonnieren\BackgroundJob\DeliverUploadBatchJob;
 use OCP\BackgroundJob\IJobList;
 use OCP\DB\QueryBuilder\IQueryBuilder;
+use OCP\Files\File;
 use OCP\Files\IRootFolder;
 use OCP\Files\Node;
 use OCP\IDBConnection;
@@ -39,10 +41,41 @@ class MailOutbox {
 			try {
 				$parentId = (int)$node->getParent()->getId();
 			} catch (\Throwable $e) {
-				// Missing parent must fail closed when we check access.
+				// A missing parent fails closed during worker access checks.
 			}
 		}
+
 		$now = time();
+		if ($event === SubscriptionService::EVENT_UPLOAD && $node instanceof File && $actor !== null && $actor !== '') {
+			try {
+				$folderId = (int)$node->getParent()->getId();
+				if ($folderId > 0) {
+					$reserved = (new UploadBatchCoordinator($this->db))->add(
+						$userId, $actor, $folderId, $now,
+						fn (string $key, int $due): int => $this->insertRow(
+							$userId, $node, $parentId, $event, $actor, $deleted, $subject, $text, $html,
+							$now, $due, $key, mb_substr($node->getName(), 0, 255),
+						),
+					);
+					$this->schedule($reserved['id'], $reserved['due'], true);
+					return;
+				}
+			} catch (\Throwable $e) {
+				$this->logger->warning('Upload grouping unavailable; sending an individual notification', [
+					'app' => 'abonnieren', 'nodeId' => (int)$node->getId(), 'exception' => $e,
+				]);
+			}
+		}
+
+		$id = $this->insertRow($userId, $node, $parentId, $event, $actor, $deleted,
+			$subject, $text, $html, $now, $now, '', '');
+		$this->schedule($id, $now);
+	}
+
+	private function insertRow(
+		string $userId, Node $node, ?int $parentId, int $event, ?string $actor, bool $deleted,
+		string $subject, string $text, string $html, int $now, int $due, string $batchKey, string $itemName,
+	): int {
 		$qb = $this->db->getQueryBuilder();
 		$qb->insert(self::TABLE)->values([
 			'user_id' => $qb->createNamedParameter($userId),
@@ -57,20 +90,22 @@ class MailOutbox {
 			'status' => $qb->createNamedParameter('pending'),
 			'created_at' => $qb->createNamedParameter($now),
 			'updated_at' => $qb->createNamedParameter($now),
-			'next_attempt_at' => $qb->createNamedParameter($now),
+			'next_attempt_at' => $qb->createNamedParameter($due),
 			'attempts' => $qb->createNamedParameter(0),
 			'lease_until' => $qb->createNamedParameter(0),
 			'completed_at' => $qb->createNamedParameter(0),
+			'batch_key' => $qb->createNamedParameter($batchKey),
+			'batch_until' => $qb->createNamedParameter($batchKey !== '' ? $due : 0),
+			'item_name' => $qb->createNamedParameter($itemName),
 		]);
 		$qb->executeStatement();
-		$id = $this->db->lastInsertId(self::TABLE);
-		$this->schedule($id, $now);
+		return $this->db->lastInsertId(self::TABLE);
 	}
 
-	private function schedule(int $id, int $at): void {
+	private function schedule(int $id, int $at, bool $batch = false): void {
 		try {
 			// Arguments may be logged by Nextcloud. Keep sensitive data in DB.
-			$this->jobList->scheduleAfter(DeliverMailJob::class, $at, ['id' => $id]);
+			$this->jobList->scheduleAfter($batch ? DeliverUploadBatchJob::class : DeliverMailJob::class, $at, ['id' => $id]);
 		} catch (\Throwable $e) {
 			// Outbox row remains pending; periodic recovery will reschedule.
 			$this->logger->error('Could not schedule outbox delivery', [
@@ -103,6 +138,10 @@ class MailOutbox {
 		$row = $this->find($id);
 		if ($row === null) {
 			return; // Reconciler will recover the abandoned lease if necessary.
+		}
+		if ((string)($row['batch_key'] ?? '') !== '') {
+			$this->retry($id, $token, (int)$row['attempts'], new \RuntimeException('Batch row routed to regular delivery job'), true);
+			return;
 		}
 		$attempts = (int)$row['attempts'];
 		$userId = (string)$row['user_id'];
@@ -152,6 +191,127 @@ class MailOutbox {
 		$this->finish($id, $token, 'sent');
 	}
 
+
+	/**
+	 * Send all eligible uploads in a closed burst as one mail. Earlier jobs
+	 * observe a postponed deadline and return without claiming any rows.
+	 * Existing per-recipient permission checks run before summary contents
+	 * are generated to avoid disclosing revoked files.
+	 */
+	public function deliverUploadBatchById(int $id): void {
+		if ($id < 1) {
+			return;
+		}
+		$now = time();
+		$leader = $this->find($id);
+		if ($leader === null || ($leader['status'] ?? '') !== 'pending'
+			|| (string)($leader['batch_key'] ?? '') === ''
+			|| (int)$leader['batch_until'] > $now
+			|| (int)$leader['next_attempt_at'] > $now) {
+			return;
+		}
+		$key = (string)$leader['batch_key'];
+
+		$qb = $this->db->getQueryBuilder();
+		$qb->select('id')->from(self::TABLE)
+			->where($qb->expr()->eq('batch_key', $qb->createNamedParameter($key)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('pending')))
+			->andWhere($qb->expr()->lte('batch_until', $qb->createNamedParameter($now)))
+			->andWhere($qb->expr()->lte('next_attempt_at', $qb->createNamedParameter($now)))
+			->orderBy('id', 'ASC')
+			->setMaxResults(UploadBatch::MAX_ITEMS_PER_EMAIL);
+		$result = $qb->executeQuery();
+		$ids = array_map(static fn (array $row): int => (int)$row['id'], $result->fetchAll());
+		$result->closeCursor();
+		if ($ids === []) {
+			return;
+		}
+
+		$token = bin2hex(random_bytes(16));
+		$qb = $this->db->getQueryBuilder();
+		$qb->update(self::TABLE)
+			->set('status', $qb->createNamedParameter('sending'))
+			->set('attempts', 'attempts + 1')
+			->set('lease_token', $qb->createNamedParameter($token))
+			->set('lease_until', $qb->createNamedParameter($now + MailRetryPolicy::LEASE_SECONDS))
+			->set('updated_at', $qb->createNamedParameter($now))
+			->where($qb->expr()->in('id', $qb->createNamedParameter($ids, IQueryBuilder::PARAM_INT_ARRAY)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('pending')))
+			->andWhere($qb->expr()->lte('batch_until', $qb->createNamedParameter($now)))
+			->andWhere($qb->expr()->lte('next_attempt_at', $qb->createNamedParameter($now)));
+		if ($qb->executeStatement() < 1) {
+			return;
+		}
+
+		$qb = $this->db->getQueryBuilder();
+		$qb->select('*')->from(self::TABLE)
+			->where($qb->expr()->eq('batch_key', $qb->createNamedParameter($key)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
+			->andWhere($qb->expr()->eq('lease_token', $qb->createNamedParameter($token)));
+		$result = $qb->executeQuery();
+		$claimed = $result->fetchAll();
+		$result->closeCursor();
+
+		$valid = [];
+		$recipientEmail = null;
+		foreach ($claimed as $row) {
+			$rowId = (int)$row['id'];
+			$attempts = (int)$row['attempts'];
+			$userId = (string)$row['user_id'];
+			try {
+				$nodes = $this->rootFolder->getUserFolder($userId)->getById((int)$row['node_id']);
+				if ($nodes === [] || !isset($this->subscriptions->getRecipientEmailsForNode(
+					$nodes[0], (int)$row['event_mask'],
+					is_string($row['actor_id']) ? $row['actor_id'] : null,
+				)[$userId])) {
+					$this->finish($rowId, $token, 'cancelled');
+					continue;
+				}
+				$email = $this->userManager->get($userId)?->getEMailAddress();
+				if (!is_string($email) || $email === '') {
+					$this->finish($rowId, $token, 'cancelled');
+					continue;
+				}
+				$recipientEmail = $email;
+				$valid[] = $row;
+			} catch (\Throwable $e) {
+				$this->retry($rowId, $token, $attempts, $e, true);
+			}
+		}
+		if ($valid === [] || $recipientEmail === null) {
+			return;
+		}
+
+		if (count($valid) === 1) {
+			$subject = (string)$valid[0]['subject'];
+			$text = (string)$valid[0]['body_text'];
+			$html = (string)$valid[0]['body_html'];
+		} else {
+			$summary = UploadBatch::message($valid);
+			$subject = $summary['subject'];
+			$text = $summary['text'];
+			$html = $summary['html'];
+		}
+
+		try {
+			$message = $this->mailer->createMessage();
+			$message->setTo([$recipientEmail]);
+			$message->setSubject($subject);
+			$message->setPlainBody($text);
+			$message->setHtmlBody($html);
+			if ($this->mailer->send($message) !== []) {
+				throw new \RuntimeException('Mailer reported unsuccessful batch delivery');
+			}
+			foreach ($valid as $row) {
+				$this->finish((int)$row['id'], $token, 'sent');
+			}
+		} catch (\Throwable $e) {
+			foreach ($valid as $row) {
+				$this->retry((int)$row['id'], $token, (int)$row['attempts'], $e, true);
+			}
+		}
+	}
+
 	/** @return array<string, mixed>|null */
 	private function find(int $id): ?array {
 		$qb = $this->db->getQueryBuilder();
@@ -172,6 +332,7 @@ class MailOutbox {
 			->set('subject', $qb->createNamedParameter(''))
 			->set('body_text', $qb->createNamedParameter(''))
 			->set('body_html', $qb->createNamedParameter(''))
+			->set('item_name', $qb->createNamedParameter(''))
 			->set('lease_token', $qb->createNamedParameter(null))
 			->set('lease_until', $qb->createNamedParameter(0))
 			->set('updated_at', $qb->createNamedParameter($now))
@@ -182,7 +343,7 @@ class MailOutbox {
 		$qb->executeStatement();
 	}
 
-	private function retry(int $id, string $token, int $attempts, \Throwable $e): void {
+	private function retry(int $id, string $token, int $attempts, \Throwable $e, bool $batch = false): void {
 		$this->logger->error('Queued subscription email delivery failed', [
 			'app' => 'abonnieren', 'outboxId' => $id, 'attempt' => $attempts, 'exception' => $e,
 		]);
@@ -202,7 +363,7 @@ class MailOutbox {
 			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
 			->andWhere($qb->expr()->eq('lease_token', $qb->createNamedParameter($token)));
 		if ($qb->executeStatement() === 1) {
-			$this->schedule($id, $due);
+			$this->schedule($id, $due, $batch);
 		}
 	}
 
@@ -211,7 +372,7 @@ class MailOutbox {
 		$now = time();
 
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('id', 'attempts')->from(self::TABLE)
+		$qb->select('id', 'attempts', 'batch_key')->from(self::TABLE)
 			->where($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
 			->andWhere($qb->expr()->lte('lease_until', $qb->createNamedParameter($now)))
 			->setMaxResults(100);
@@ -238,12 +399,12 @@ class MailOutbox {
 				->andWhere($update->expr()->eq('status', $update->createNamedParameter('sending')))
 				->andWhere($update->expr()->lte('lease_until', $update->createNamedParameter($now)));
 			if ($update->executeStatement() === 1) {
-				$this->schedule($id, $due);
+				$this->schedule($id, $due, !empty($row['batch_key']));
 			}
 		}
 
 		$qb = $this->db->getQueryBuilder();
-		$qb->select('id')->from(self::TABLE)
+		$qb->select('id', 'batch_key')->from(self::TABLE)
 			->where($qb->expr()->eq('status', $qb->createNamedParameter('pending')))
 			->andWhere($qb->expr()->lte('next_attempt_at', $qb->createNamedParameter($now)))
 			->setMaxResults(100);
@@ -251,7 +412,7 @@ class MailOutbox {
 		$dueRows = $result->fetchAll();
 		$result->closeCursor();
 		foreach ($dueRows as $row) {
-			$this->schedule((int)$row['id'], $now);
+			$this->schedule((int)$row['id'], $now, !empty($row['batch_key']));
 		}
 
 		$qb = $this->db->getQueryBuilder();
@@ -271,6 +432,7 @@ class MailOutbox {
 			->set('subject', $qb->createNamedParameter(''))
 			->set('body_text', $qb->createNamedParameter(''))
 			->set('body_html', $qb->createNamedParameter(''))
+			->set('item_name', $qb->createNamedParameter(''))
 			->set('completed_at', $qb->createNamedParameter($now))
 			->set('updated_at', $qb->createNamedParameter($now))
 			->set('lease_until', $qb->createNamedParameter(0))
