@@ -23,42 +23,52 @@ use Psr\Log\LoggerInterface;
 
 class MailOutboxDeliveryTest extends TestCase {
 	/** @return array{IDBConnection,IQueryBuilder} */
-	private function withQueuedMessage(array $row): array {
+	private function withQueuedMessage(array $row, int $claimed = 1): array {
 		$db = $this->createMock(IDBConnection::class);
-		$select = $this->createMock(IQueryBuilder::class);
-		$delete = $this->createMock(IQueryBuilder::class);
-		$update = $this->createMock(IQueryBuilder::class);
-		$db->method('getQueryBuilder')->willReturnOnConsecutiveCalls($select, $delete, $update);
+		$qb = $this->createMock(IQueryBuilder::class);
+		$db->method('getQueryBuilder')->willReturn($qb);
+		$qb->method('update')->willReturnSelf();
+		$qb->method('set')->willReturnSelf();
+		$qb->method('select')->willReturnSelf();
+		$qb->method('from')->willReturnSelf();
+		$qb->method('where')->willReturnSelf();
+		$qb->method('andWhere')->willReturnSelf();
+		$qb->method('createNamedParameter')->willReturn(':param');
+		$qb->method('executeStatement')->willReturn($claimed);
 		$expr = $this->createMock(IExpressionBuilder::class);
-		$expr->method('eq')->willReturn('id = :id');
-		foreach ([$select, $delete, $update] as $query) {
-			$query->method('expr')->willReturn($expr);
-			$query->method('createNamedParameter')->willReturn(':id');
-			$query->method('where')->willReturnSelf();
-		}
-		$select->method('select')->willReturnSelf();
-		$select->method('from')->willReturnSelf();
+		$expr->method('eq')->willReturn('field = :param');
+		$expr->method('lte')->willReturn('field <= :param');
+		$qb->method('expr')->willReturn($expr);
 		$result = $this->createMock(IResult::class);
 		$result->method('fetch')->willReturn($row);
-		$select->method('executeQuery')->willReturn($result);
-		$delete->method('delete')->willReturnSelf();
-		$delete->expects($this->once())->method('executeStatement');
-		$update->method('update')->willReturnSelf();
-		$update->method('set')->willReturnSelf();
-		return [$db, $delete];
+		$qb->method('executeQuery')->willReturn($result);
+		return [$db, $qb];
 	}
 
 	private function row(): array {
 		return [
-			'status' => 'pending', 'user_id' => 'subscriber', 'node_id' => 42,
-			'parent_id' => null, 'deleted' => 0, 'event_mask' => SubscriptionService::EVENT_UPLOAD,
+			'status' => 'sending', 'attempts' => 1,
+			'user_id' => 'subscriber', 'node_id' => 42, 'parent_id' => null,
+			'deleted' => 0, 'event_mask' => SubscriptionService::EVENT_UPLOAD,
 			'actor_id' => 'uploader', 'subject' => 'New file',
 			'body_text' => 'Hello', 'body_html' => '<p>Hello</p>',
 		];
 	}
 
-	public function testRevokedFileAccessPreventsQueuedMail(): void {
-		[$db] = $this->withQueuedMessage($this->row());
+	public function testAlreadyClaimedRowCannotSendAgain(): void {
+		[$db, $qb] = $this->withQueuedMessage($this->row(), 0);
+		$qb->expects($this->never())->method('executeQuery');
+		$mailer = $this->createMock(IMailer::class);
+		$mailer->expects($this->never())->method('send');
+		(new MailOutbox($db, $this->createMock(IJobList::class),
+			$this->createMock(IRootFolder::class), $this->createMock(IUserManager::class),
+			$this->createMock(SubscriptionService::class), $mailer, $this->createMock(LoggerInterface::class)))
+			->deliverById(17);
+	}
+
+	public function testRevokedFileAccessCancelsQueuedMail(): void {
+		[$db, $qb] = $this->withQueuedMessage($this->row());
+		$qb->expects($this->exactly(2))->method('executeStatement');
 		$folder = $this->createMock(Folder::class);
 		$folder->expects($this->once())->method('getById')->with(42)->willReturn([]);
 		$root = $this->createMock(IRootFolder::class);
@@ -67,38 +77,73 @@ class MailOutboxDeliveryTest extends TestCase {
 		$mailer->expects($this->never())->method('send');
 		$subscriptions = $this->createMock(SubscriptionService::class);
 		$subscriptions->expects($this->never())->method('getRecipientEmailsForNode');
-
 		(new MailOutbox($db, $this->createMock(IJobList::class), $root,
 			$this->createMock(IUserManager::class), $subscriptions, $mailer,
 			$this->createMock(LoggerInterface::class)))->deliverById(17);
 	}
 
-	public function testCurrentSubscriberReceivesQueuedMail(): void {
-		[$db] = $this->withQueuedMessage($this->row());
+	/** @return array{IRootFolder,SubscriptionService,IUserManager} */
+	private function authorizedRecipient(): array {
 		$node = $this->createMock(Node::class);
 		$folder = $this->createMock(Folder::class);
 		$folder->method('getById')->with(42)->willReturn([$node]);
 		$root = $this->createMock(IRootFolder::class);
 		$root->method('getUserFolder')->with('subscriber')->willReturn($folder);
 		$subscriptions = $this->createMock(SubscriptionService::class);
-		$subscriptions->method('getRecipientEmailsForNode')->with($node,
-			SubscriptionService::EVENT_UPLOAD, 'uploader')
+		$subscriptions->method('getRecipientEmailsForNode')
+			->with($node, SubscriptionService::EVENT_UPLOAD, 'uploader')
 			->willReturn(['subscriber' => 'recipient@example.test']);
 		$user = $this->createMock(IUser::class);
 		$user->method('getEMailAddress')->willReturn('recipient@example.test');
 		$users = $this->createMock(IUserManager::class);
 		$users->method('get')->with('subscriber')->willReturn($user);
+		return [$root, $subscriptions, $users];
+	}
+
+	public function testCurrentSubscriberReceivesQueuedMail(): void {
+		[$db, $qb] = $this->withQueuedMessage($this->row());
+		$qb->expects($this->exactly(2))->method('executeStatement');
+		[$root, $subscriptions, $users] = $this->authorizedRecipient();
 		$mailer = $this->createMock(IMailer::class);
 		$message = $this->createMock(IMessage::class);
 		$mailer->method('createMessage')->willReturn($message);
-		$mailer->expects($this->once())->method('send')->with($message);
-
-		$logger = $this->createMock(LoggerInterface::class);
-		$logger->method('error')->willReturnCallback(static function (string $message, array $context): void {
-			throw $context['exception'];
-		});
+		$mailer->expects($this->once())->method('send')->with($message)->willReturn([]);
 		(new MailOutbox($db, $this->createMock(IJobList::class), $root,
-			$users, $subscriptions, $mailer, $logger))
+			$users, $subscriptions, $mailer, $this->createMock(LoggerInterface::class)))
 			->deliverById(17);
+	}
+
+	public function testFailedSendSchedulesRetryWithoutBlockingOthers(): void {
+		[$db, $qb] = $this->withQueuedMessage($this->row());
+		$qb->expects($this->exactly(2))->method('executeStatement');
+		[$root, $subscriptions, $users] = $this->authorizedRecipient();
+		$mailer = $this->createMock(IMailer::class);
+		$mailer->method('createMessage')->willReturn($this->createMock(IMessage::class));
+		$mailer->expects($this->once())->method('send')
+			->willThrowException(new \RuntimeException('Simulated SMTP outage'));
+		$jobs = $this->createMock(IJobList::class);
+		$jobs->expects($this->once())->method('scheduleAfter')
+			->with(\OCA\Abonnieren\BackgroundJob\DeliverMailJob::class,
+				self::callback(static fn ($when): bool => is_int($when) && $when >= time()),
+				['id' => 17]);
+		$logger = $this->createMock(LoggerInterface::class);
+		$logger->expects($this->once())->method('error');
+		(new MailOutbox($db, $jobs, $root, $users, $subscriptions, $mailer, $logger))
+			->deliverById(17);
+	}
+
+	public function testFinalFailureDoesNotScheduleFurtherRetry(): void {
+		$row = $this->row();
+		$row['attempts'] = 5;
+		[$db, $qb] = $this->withQueuedMessage($row);
+		$qb->expects($this->exactly(2))->method('executeStatement');
+		[$root, $subscriptions, $users] = $this->authorizedRecipient();
+		$mailer = $this->createMock(IMailer::class);
+		$mailer->method('createMessage')->willReturn($this->createMock(IMessage::class));
+		$mailer->method('send')->willThrowException(new \RuntimeException('Simulated outage'));
+		$jobs = $this->createMock(IJobList::class);
+		$jobs->expects($this->never())->method('scheduleAfter');
+		(new MailOutbox($db, $jobs, $root, $users, $subscriptions, $mailer,
+			$this->createMock(LoggerInterface::class)))->deliverById(17);
 	}
 }

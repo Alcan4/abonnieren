@@ -6,6 +6,7 @@ namespace OCA\Abonnieren\Service;
 
 use OCA\Abonnieren\BackgroundJob\DeliverMailJob;
 use OCP\BackgroundJob\IJobList;
+use OCP\DB\QueryBuilder\IQueryBuilder;
 use OCP\Files\IRootFolder;
 use OCP\Files\Node;
 use OCP\IDBConnection;
@@ -13,7 +14,11 @@ use OCP\IUserManager;
 use OCP\Mail\IMailer;
 use Psr\Log\LoggerInterface;
 
-/** Database-backed mail outbox; job arguments contain only the opaque row ID. */
+/**
+ * Persisted email outbox. Claims are atomic to prevent parallel worker sends.
+ * SMTP is not transactional: a crash after remote acceptance but before the
+ * success update may still cause one duplicate after lease expiry.
+ */
 class MailOutbox {
 	private const TABLE = 'abonnieren_mail_outbox';
 
@@ -34,10 +39,10 @@ class MailOutbox {
 			try {
 				$parentId = (int)$node->getParent()->getId();
 			} catch (\Throwable $e) {
-				// A missing parent fails closed during delivery.
+				// Missing parent must fail closed when we check access.
 			}
 		}
-
+		$now = time();
 		$qb = $this->db->getQueryBuilder();
 		$qb->insert(self::TABLE)->values([
 			'user_id' => $qb->createNamedParameter($userId),
@@ -50,71 +55,229 @@ class MailOutbox {
 			'body_text' => $qb->createNamedParameter($text),
 			'body_html' => $qb->createNamedParameter($html),
 			'status' => $qb->createNamedParameter('pending'),
-			'created_at' => $qb->createNamedParameter(time()),
+			'created_at' => $qb->createNamedParameter($now),
+			'updated_at' => $qb->createNamedParameter($now),
+			'next_attempt_at' => $qb->createNamedParameter($now),
+			'attempts' => $qb->createNamedParameter(0),
+			'lease_until' => $qb->createNamedParameter(0),
+			'completed_at' => $qb->createNamedParameter(0),
 		]);
 		$qb->executeStatement();
-		$this->jobList->add(DeliverMailJob::class, ['id' => $this->db->lastInsertId(self::TABLE)]);
+		$id = $this->db->lastInsertId(self::TABLE);
+		$this->schedule($id, $now);
 	}
 
+	private function schedule(int $id, int $at): void {
+		try {
+			// Arguments may be logged by Nextcloud. Keep sensitive data in DB.
+			$this->jobList->scheduleAfter(DeliverMailJob::class, $at, ['id' => $id]);
+		} catch (\Throwable $e) {
+			// Outbox row remains pending; periodic recovery will reschedule.
+			$this->logger->error('Could not schedule outbox delivery', [
+				'app' => 'abonnieren', 'outboxId' => $id, 'exception' => $e,
+			]);
+		}
+	}
+
+	/** Only a worker that atomically claims the due row can contact SMTP. */
 	public function deliverById(int $id): void {
-		$qb = $this->db->getQueryBuilder();
-		$qb->select('*')->from(self::TABLE)->where($qb->expr()->eq('id', $qb->createNamedParameter($id)));
-		$result = $qb->executeQuery();
-		$row = $result->fetch();
-		$result->closeCursor();
-		if (!is_array($row) || $row['status'] !== 'pending') {
+		if ($id < 1) {
 			return;
 		}
+		$now = time();
+		$token = bin2hex(random_bytes(16));
+		$qb = $this->db->getQueryBuilder();
+		$qb->update(self::TABLE)
+			->set('status', $qb->createNamedParameter('sending'))
+			->set('attempts', 'attempts + 1')
+			->set('lease_token', $qb->createNamedParameter($token))
+			->set('lease_until', $qb->createNamedParameter($now + MailRetryPolicy::LEASE_SECONDS))
+			->set('updated_at', $qb->createNamedParameter($now))
+			->where($qb->expr()->eq('id', $qb->createNamedParameter($id)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('pending')))
+			->andWhere($qb->expr()->lte('next_attempt_at', $qb->createNamedParameter($now)));
+		if ($qb->executeStatement() !== 1) {
+			return; // Already running, completed, cancelled, failed or not yet due.
+		}
+
+		$row = $this->find($id);
+		if ($row === null) {
+			return; // Reconciler will recover the abandoned lease if necessary.
+		}
+		$attempts = (int)$row['attempts'];
 		$userId = (string)$row['user_id'];
 		$deleted = (bool)$row['deleted'];
 		$accessId = $deleted ? (int)($row['parent_id'] ?? 0) : (int)$row['node_id'];
 
 		try {
 			if ($accessId < 1) {
-				$this->discard($id);
+				$this->finish($id, $token, 'cancelled');
 				return;
 			}
 			$nodes = $this->rootFolder->getUserFolder($userId)->getById($accessId);
 			if ($nodes === []) {
-				$this->discard($id);
+				$this->finish($id, $token, 'cancelled');
 				return;
 			}
 			if (!$deleted && !isset($this->subscriptions->getRecipientEmailsForNode(
 				$nodes[0], (int)$row['event_mask'], is_string($row['actor_id']) ? $row['actor_id'] : null,
 			)[$userId])) {
-				$this->discard($id);
+				$this->finish($id, $token, 'cancelled');
 				return;
 			}
 			$email = $this->userManager->get($userId)?->getEMailAddress();
 			if (!is_string($email) || $email === '') {
-				$this->discard($id);
+				$this->finish($id, $token, 'cancelled');
 				return;
 			}
+		} catch (\Throwable $e) {
+			$this->retry($id, $token, $attempts, $e);
+			return;
+		}
+
+		try {
 			$message = $this->mailer->createMessage();
 			$message->setTo([$email]);
 			$message->setSubject((string)$row['subject']);
 			$message->setPlainBody((string)$row['body_text']);
 			$message->setHtmlBody((string)$row['body_html']);
-			$this->mailer->send($message);
-			$this->discard($id);
+			$failedAddresses = $this->mailer->send($message);
+			if ($failedAddresses !== []) {
+				throw new \RuntimeException('Mailer reported an unsuccessful delivery');
+			}
 		} catch (\Throwable $e) {
-			$this->logger->error('Could not deliver queued subscription mail', [
-				'app' => 'abonnieren', 'outboxId' => $id, 'exception' => $e,
-			]);
-			$this->setStatus($id, 'failed');
+			$this->retry($id, $token, $attempts, $e);
+			return;
 		}
+		$this->finish($id, $token, 'sent');
 	}
 
-	private function discard(int $id): void {
+	/** @return array<string, mixed>|null */
+	private function find(int $id): ?array {
 		$qb = $this->db->getQueryBuilder();
-		$qb->delete(self::TABLE)->where($qb->expr()->eq('id', $qb->createNamedParameter($id)));
+		$qb->select('*')->from(self::TABLE)
+			->where($qb->expr()->eq('id', $qb->createNamedParameter($id)));
+		$result = $qb->executeQuery();
+		$row = $result->fetch();
+		$result->closeCursor();
+		return is_array($row) ? $row : null;
+	}
+
+	/** Preserve metadata for diagnostics, but clear potentially sensitive bodies. */
+	private function finish(int $id, string $token, string $status): void {
+		$now = time();
+		$qb = $this->db->getQueryBuilder();
+		$qb->update(self::TABLE)
+			->set('status', $qb->createNamedParameter($status))
+			->set('subject', $qb->createNamedParameter(''))
+			->set('body_text', $qb->createNamedParameter(''))
+			->set('body_html', $qb->createNamedParameter(''))
+			->set('lease_token', $qb->createNamedParameter(null))
+			->set('lease_until', $qb->createNamedParameter(0))
+			->set('updated_at', $qb->createNamedParameter($now))
+			->set('completed_at', $qb->createNamedParameter($now))
+			->where($qb->expr()->eq('id', $qb->createNamedParameter($id)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
+			->andWhere($qb->expr()->eq('lease_token', $qb->createNamedParameter($token)));
 		$qb->executeStatement();
 	}
 
-	private function setStatus(int $id, string $status): void {
+	private function retry(int $id, string $token, int $attempts, \Throwable $e): void {
+		$this->logger->error('Queued subscription email delivery failed', [
+			'app' => 'abonnieren', 'outboxId' => $id, 'attempt' => $attempts, 'exception' => $e,
+		]);
+		if (MailRetryPolicy::exhausted($attempts)) {
+			$this->finish($id, $token, 'failed');
+			return;
+		}
+		$due = time() + MailRetryPolicy::delayForAttempt($attempts);
 		$qb = $this->db->getQueryBuilder();
-		$qb->update(self::TABLE)->set('status', $qb->createNamedParameter($status))
-			->where($qb->expr()->eq('id', $qb->createNamedParameter($id)));
+		$qb->update(self::TABLE)
+			->set('status', $qb->createNamedParameter('pending'))
+			->set('next_attempt_at', $qb->createNamedParameter($due))
+			->set('lease_until', $qb->createNamedParameter(0))
+			->set('lease_token', $qb->createNamedParameter(null))
+			->set('updated_at', $qb->createNamedParameter(time()))
+			->where($qb->expr()->eq('id', $qb->createNamedParameter($id)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
+			->andWhere($qb->expr()->eq('lease_token', $qb->createNamedParameter($token)));
+		if ($qb->executeStatement() === 1) {
+			$this->schedule($id, $due);
+		}
+	}
+
+	/** Recover orphaned jobs and clear old outcome rows (invoked by timed cron). */
+	public function reconcile(): void {
+		$now = time();
+
+		$qb = $this->db->getQueryBuilder();
+		$qb->select('id', 'attempts')->from(self::TABLE)
+			->where($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
+			->andWhere($qb->expr()->lte('lease_until', $qb->createNamedParameter($now)))
+			->setMaxResults(100);
+		$result = $qb->executeQuery();
+		$expired = $result->fetchAll();
+		$result->closeCursor();
+		foreach ($expired as $row) {
+			$id = (int)$row['id'];
+			$attempts = (int)$row['attempts'];
+			if (MailRetryPolicy::exhausted($attempts)) {
+				// Lease recovery must not overwrite a renewed (still active) lease.
+				$this->expireFailed($id, $now);
+				continue;
+			}
+			$due = $now + MailRetryPolicy::delayForAttempt($attempts);
+			$update = $this->db->getQueryBuilder();
+			$update->update(self::TABLE)
+				->set('status', $update->createNamedParameter('pending'))
+				->set('next_attempt_at', $update->createNamedParameter($due))
+				->set('lease_until', $update->createNamedParameter(0))
+				->set('lease_token', $update->createNamedParameter(null))
+				->set('updated_at', $update->createNamedParameter($now))
+				->where($update->expr()->eq('id', $update->createNamedParameter($id)))
+				->andWhere($update->expr()->eq('status', $update->createNamedParameter('sending')))
+				->andWhere($update->expr()->lte('lease_until', $update->createNamedParameter($now)));
+			if ($update->executeStatement() === 1) {
+				$this->schedule($id, $due);
+			}
+		}
+
+		$qb = $this->db->getQueryBuilder();
+		$qb->select('id')->from(self::TABLE)
+			->where($qb->expr()->eq('status', $qb->createNamedParameter('pending')))
+			->andWhere($qb->expr()->lte('next_attempt_at', $qb->createNamedParameter($now)))
+			->setMaxResults(100);
+		$result = $qb->executeQuery();
+		$dueRows = $result->fetchAll();
+		$result->closeCursor();
+		foreach ($dueRows as $row) {
+			$this->schedule((int)$row['id'], $now);
+		}
+
+		$qb = $this->db->getQueryBuilder();
+		$qb->delete(self::TABLE)
+			->where($qb->expr()->in('status', $qb->createNamedParameter(
+				['sent', 'failed', 'cancelled'], IQueryBuilder::PARAM_STR_ARRAY,
+			)))
+			->andWhere($qb->expr()->lt('completed_at', $qb->createNamedParameter($now - MailRetryPolicy::HISTORY_SECONDS)))
+			->andWhere($qb->expr()->gt('completed_at', $qb->createNamedParameter(0)));
+		$qb->executeStatement();
+	}
+
+	private function expireFailed(int $id, int $now): void {
+		$qb = $this->db->getQueryBuilder();
+		$qb->update(self::TABLE)
+			->set('status', $qb->createNamedParameter('failed'))
+			->set('subject', $qb->createNamedParameter(''))
+			->set('body_text', $qb->createNamedParameter(''))
+			->set('body_html', $qb->createNamedParameter(''))
+			->set('completed_at', $qb->createNamedParameter($now))
+			->set('updated_at', $qb->createNamedParameter($now))
+			->set('lease_until', $qb->createNamedParameter(0))
+			->set('lease_token', $qb->createNamedParameter(null))
+			->where($qb->expr()->eq('id', $qb->createNamedParameter($id)))
+			->andWhere($qb->expr()->eq('status', $qb->createNamedParameter('sending')))
+			->andWhere($qb->expr()->lte('lease_until', $qb->createNamedParameter($now)));
 		$qb->executeStatement();
 	}
 }
