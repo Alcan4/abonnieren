@@ -7,7 +7,9 @@ namespace OCA\Abonnieren\Tests\Listeners;
 use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Listeners\DownloadNotificationListener;
 use OCA\Abonnieren\Service\DownloadRequestPolicy;
+use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Service\RecipientL10N;
+use OCA\Abonnieren\Service\RecipientMailDispatcher;
 use OCA\Abonnieren\Service\RecipientVisiblePath;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
@@ -38,6 +40,7 @@ class DownloadNotificationListenerTest extends TestCase {
 		$cacheFactory = $this->createMock(ICacheFactory::class);
 		$cacheFactory->method('createDistributed')->willReturn($this->createMock(ICache::class));
 		$listener = new DownloadNotificationListener(
+			$this->createMock(MailOutbox::class),
 			$this->createMock(IMailer::class),
 			$this->createMock(RecipientL10N::class),
 			$this->createMock(LoggerInterface::class),
@@ -49,6 +52,7 @@ class DownloadNotificationListenerTest extends TestCase {
 			$this->createMock(ActivityPublisher::class),
 			$this->createMock(RecipientVisiblePath::class),
 			$requestPolicy,
+			$this->createMock(RecipientMailDispatcher::class),
 			$cacheFactory,
 		);
 

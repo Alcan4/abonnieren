@@ -112,6 +112,7 @@ class ShareContextResolver {
 
 			$sharedBy = $share->getSharedBy();
 			if ($sharedBy === '') {
+				// Preserve the existing fallback for shares without a resolvable owner.
 				return $node;
 			}
 

@@ -69,7 +69,11 @@ jobs:
       - name: Install app test dependencies
         working-directory: apps/abonnieren
         run: |
+          # Upstream composer.json has authors[0].homepage = ""; Composer rejects it
+          # when modifying dependencies. Fix only the ephemeral CI checkout.
           php -r '$file = "composer.json"; $json = json_decode(file_get_contents($file), true, 512, JSON_THROW_ON_ERROR); unset($json["authors"][0]["homepage"]); file_put_contents($file, json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");'
+          # Upstream composer.json pins PHP 8.2 although this job uses PHP 8.3.
+          # Match the runner's patched PHP in this temporary checkout.
           composer config platform.php 8.3.36
           composer remove nextcloud/ocp --dev --no-scripts --no-interaction
           composer install --prefer-dist --no-interaction

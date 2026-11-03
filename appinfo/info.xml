@@ -25,6 +25,9 @@
 			<provider>OCA\Abonnieren\Activity\Provider</provider>
 		</providers>
 	</activity>
+	<background-jobs>
+		<job>OCA\Abonnieren\BackgroundJob\ReconcileOutboxJob</job>
+	</background-jobs>
 	<navigations>
 		<navigation>
 			<id>abonnieren</id>
