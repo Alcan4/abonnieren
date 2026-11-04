@@ -110,7 +110,12 @@ class ShareContextResolver {
 				return $shareNode;
 			}
 
-			$ownerFolder = $this->rootFolder->getUserFolder($share->getSharedBy());
+			$sharedBy = $share->getSharedBy();
+			if ($sharedBy === '') {
+				return $node;
+			}
+
+			$ownerFolder = $this->rootFolder->getUserFolder($sharedBy);
 			$matches = $ownerFolder->getById($node->getId());
 			if ($matches !== []) {
 				return $matches[0];

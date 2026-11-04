@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OCA\Abonnieren\Activity;
 
 use OCA\Abonnieren\AppInfo\Application;
+use OCA\Abonnieren\Service\RecipientVisiblePath;
 use OCP\Activity\IManager;
 use OCP\Files\Node;
 use Psr\Log\LoggerInterface;
@@ -14,6 +15,7 @@ class ActivityPublisher {
 	public function __construct(
 		private IManager $activityManager,
 		private LoggerInterface $logger,
+		private RecipientVisiblePath $recipientVisiblePath,
 	) {
 	}
 
@@ -31,7 +33,6 @@ class ActivityPublisher {
 			return;
 		}
 
-		$path = $this->getUserRelativePath($ownerNode);
 		$author = $actorUserId ?? '';
 
 		foreach (array_unique($recipientUserIds) as $userId) {
@@ -40,6 +41,8 @@ class ActivityPublisher {
 			}
 
 			try {
+				$path = $this->recipientVisiblePath->pathFor($userId, $ownerNode, $subject === Provider::SUBJECT_DELETED)
+					?? ('/' . $ownerNode->getName());
 				$event = $this->activityManager->generateEvent();
 				$event->setApp(Application::APP_ID)
 					->setType(Setting::IDENTIFIER)
@@ -65,8 +68,4 @@ class ActivityPublisher {
 		}
 	}
 
-	private function getUserRelativePath(Node $node): string {
-		$parts = explode('/', trim($node->getPath(), '/'));
-		return '/' . implode('/', array_slice($parts, 2));
-	}
 }

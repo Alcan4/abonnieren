@@ -6,7 +6,9 @@ namespace OCA\Abonnieren\Listeners;
 
 use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Activity\Provider;
+use OCA\Abonnieren\Service\DownloadRequestPolicy;
 use OCA\Abonnieren\Service\RecipientL10N;
+use OCA\Abonnieren\Service\RecipientVisiblePath;
 use OCA\Abonnieren\Service\ShareContextResolver;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
@@ -43,6 +45,8 @@ class DownloadNotificationListener implements IEventListener {
 		private IRequest $request,
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
+		private RecipientVisiblePath $recipientVisiblePath,
+		private DownloadRequestPolicy $downloadRequestPolicy,
 		ICacheFactory $cacheFactory,
 	) {
 		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
@@ -78,7 +82,7 @@ class DownloadNotificationListener implements IEventListener {
 			Constants::PERMISSION_READ,
 		);
 		$user = $this->userSession->getUser();
-		$actorUserId = $user?->getUID() ?? $this->resolveActorUserId();
+		$actorUserId = $user?->getUID();
 
 		$actorKey = $actorUserId ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
 		$cacheKey = implode(':', ['download', (string)$folder->getId(), $actorKey]);
@@ -94,7 +98,7 @@ class DownloadNotificationListener implements IEventListener {
 
 	private function handleFileDownload(BeforeNodeReadEvent $event): void {
 		$node = $event->getNode();
-		if (!$node instanceof File || str_ends_with($node->getName(), '.part') || $this->isInternalSystemPath($node) || !$this->isFileOpenRequest()) {
+		if (!$node instanceof File || str_ends_with($node->getName(), '.part') || $this->isInternalSystemPath($node) || !$this->downloadRequestPolicy->isFileDownload()) {
 			return;
 		}
 
@@ -104,7 +108,7 @@ class DownloadNotificationListener implements IEventListener {
 			Constants::PERMISSION_READ,
 		);
 		$user = $this->userSession->getUser();
-		$actorUserId = $user?->getUID() ?? $this->resolveActorUserId();
+		$actorUserId = $user?->getUID();
 
 		$folderPath = $this->cache->get('request:' . $this->request->getId());
 		if (is_string($folderPath) && str_starts_with($node->getPath(), $folderPath)) {
@@ -120,31 +124,6 @@ class DownloadNotificationListener implements IEventListener {
 
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
 		$this->notify($share, $node, $subscriptionNode, $actorUserId);
-	}
-
-	/**
-	 * Any real file body read counts as an open/download. Only ignore probes
-	 * and folder-list thumbnails — no per-app allowlist.
-	 */
-	private function isFileOpenRequest(): bool {
-		$method = strtoupper($this->request->getMethod());
-		if (in_array($method, ['HEAD', 'OPTIONS', 'PROPFIND', 'REPORT'], true)) {
-			return false;
-		}
-
-		$uri = strtolower($this->request->getRequestUri());
-		if (preg_match('~/(apps/files/api/v1/(preview|thumbnail)|apps/files/thumbnail)~', $uri) === 1) {
-			return false;
-		}
-
-		if (str_contains($uri, '/core/preview')) {
-			$x = (int)$this->request->getParam('x', 0);
-			$y = (int)$this->request->getParam('y', 0);
-			// Small previews are generated while browsing a folder, not opening.
-			return max($x, $y) >= 512;
-		}
-
-		return true;
 	}
 
 	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode, ?string $actorUserId = null): void {
@@ -167,11 +146,9 @@ class DownloadNotificationListener implements IEventListener {
 		try {
 			$isFolder = $node instanceof Folder;
 			$isPublicLink = $this->shareResolver->isPublicShare($share);
-			$path = $this->getUserRelativePath($subscriptionNode);
-			$token = $share?->getToken();
-
 			foreach ($recipients as $userId => $email) {
 				$l10n = $this->recipientL10n->forUser($userId);
+				$path = $this->recipientVisiblePath->pathFor($userId, $subscriptionNode);
 				$subject = $isFolder
 					? ($isPublicLink
 						? $l10n->t('Public share folder downloaded')
@@ -195,22 +172,18 @@ class DownloadNotificationListener implements IEventListener {
 				$template->addHeading($subject);
 				$template->addBodyText($description);
 				$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
-				$template->addBodyListItem($l10n->t('Path:') . ' ' . $path);
+				if ($path !== null) {
+					$template->addBodyListItem($l10n->t('Path:') . ' ' . $path);
+				}
 				if ($node instanceof File) {
 					$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
 				}
 				$template->addBodyListItem($l10n->t('Downloaded by:') . ' ' . $this->getActorDisplayName($l10n, $isPublicLink));
 				$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
 
-				if ($isPublicLink && is_string($token) && $token !== '') {
-					$template->addBodyButton(
-						$l10n->t('Open public share'),
-						$this->urlGenerator->linkToRouteAbsolute(
-							'files_sharing.sharecontroller.showShare',
-							['token' => $token],
-						),
-					);
-				} else {
+				// Do not copy a public-share capability token into subscriber mail.
+				// Link only through the recipient's authenticated Nextcloud access.
+				if ($path !== null) {
 					$template->addBodyButton(
 						$l10n->t('Open file'),
 						$this->urlGenerator->linkToRouteAbsolute(
@@ -240,11 +213,6 @@ class DownloadNotificationListener implements IEventListener {
 		}
 	}
 
-	private function getUserRelativePath(Node $node): string {
-		$parts = explode('/', trim($node->getPath(), '/'));
-		return '/' . implode('/', array_slice($parts, 2));
-	}
-
 	private function getActorDisplayName(IL10N $l10n, bool $publicLinkActivity): string {
 		$user = $this->userSession->getUser();
 		if ($user !== null) {
@@ -254,15 +222,6 @@ class DownloadNotificationListener implements IEventListener {
 		return $publicLinkActivity
 			? $l10n->t('Anonymous visitor')
 			: $l10n->t('Unknown');
-	}
-
-	/** Editors such as ONLYOFFICE may set OC_User without a full IUserSession. */
-	private function resolveActorUserId(): ?string {
-		if (!class_exists(\OC_User::class)) {
-			return null;
-		}
-		$uid = \OC_User::getUser();
-		return is_string($uid) && $uid !== '' ? $uid : null;
 	}
 
 	private function isInternalSystemPath(Node $node): bool {
