@@ -96,6 +96,17 @@ class SubscriptionService {
 
 	/** @return array<string, string> Recipient e-mail addresses keyed by user id. */
 	public function getRecipientEmailsForNode(Node $node, int $event, ?string $actorUserId = null): array {
+		$emails = [];
+		foreach ($this->getRecipientsForNode($node, $event, $actorUserId) as $userId => $email) {
+			if (is_string($email) && $email !== '') {
+				$emails[$userId] = $email;
+			}
+		}
+		return $emails;
+	}
+
+	/** @return array<string, string|null> Eligible users and their current e-mail address, if any. */
+	public function getRecipientsForNode(Node $node, int $event, ?string $actorUserId = null): array {
 		if (($event & self::ALLOWED_EVENTS) !== $event || $event < 1) {
 			return [];
 		}
@@ -154,9 +165,7 @@ class SubscriptionService {
 			}
 
 			$email = $this->userManager->get($userId)?->getEMailAddress();
-			if (is_string($email) && $email !== '') {
-				$recipients[$userId] = $email;
-			}
+			$recipients[$userId] = is_string($email) && $email !== '' ? $email : null;
 		}
 
 		return $recipients;

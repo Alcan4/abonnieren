@@ -6,6 +6,7 @@ namespace OCA\Abonnieren\Listeners;
 
 use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Activity\Provider;
+use OCA\Abonnieren\Notification\NotificationPublisher;
 use OCA\Abonnieren\Service\DownloadRequestPolicy;
 use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Service\RecipientL10N;
@@ -48,6 +49,7 @@ class DownloadNotificationListener implements IEventListener {
 		private IRequest $request,
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
+		private NotificationPublisher $nativePublisher,
 		private RecipientVisiblePath $recipientVisiblePath,
 		private DownloadRequestPolicy $downloadRequestPolicy,
 		private RecipientMailDispatcher $mailDispatcher,
@@ -131,7 +133,7 @@ class DownloadNotificationListener implements IEventListener {
 	}
 
 	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode, ?string $actorUserId = null): bool {
-		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
+		$recipients = $this->subscriptionService->getRecipientsForNode(
 			$subscriptionNode,
 			SubscriptionService::EVENT_DOWNLOAD,
 			$actorUserId ?? $this->userSession->getUser()?->getUID(),
@@ -140,18 +142,20 @@ class DownloadNotificationListener implements IEventListener {
 			return true;
 		}
 
-		$this->activityPublisher->publishForRecipients(
-			Provider::SUBJECT_DOWNLOADED,
+		$nativeSent = $this->nativePublisher->publishForRecipients(
 			$subscriptionNode,
-			$actorUserId ?? $this->userSession->getUser()?->getUID(),
+			SubscriptionService::EVENT_DOWNLOAD,
 			array_keys($recipients),
 		);
+		$emailRecipients = array_filter($recipients, static fn ($email): bool => is_string($email) && $email !== '');
+		$queuedUserIds = [];
+		$mailQueued = true;
 
 		try {
 			$isFolder = $node instanceof Folder;
 			$isPublicLink = $this->shareResolver->isPublicShare($share);
 			$queuedUserIds = $this->mailDispatcher->deliver(
-				$recipients,
+				$emailRecipients,
 				function (string $userId, string $email) use ($node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink): void {
 					$l10n = $this->recipientL10n->forUser($userId);
 					$path = $this->recipientVisiblePath->pathFor($userId, $subscriptionNode);
@@ -204,7 +208,7 @@ class DownloadNotificationListener implements IEventListener {
 				'Could not queue download notification',
 				['shareId' => $share !== null ? (int)$share->getId() : null, 'nodeId' => (int)$node->getId()],
 			);
-			return count($queuedUserIds) === count($recipients);
+			$mailQueued = count($queuedUserIds) === count($emailRecipients);
 		} catch (\Throwable $e) {
 			$this->logger->error('Could not queue download notification', [
 				'app' => 'abonnieren',
@@ -212,8 +216,19 @@ class DownloadNotificationListener implements IEventListener {
 				'nodeId' => (int)$node->getId(),
 				'exception' => $e,
 			]);
-			return false;
+			$mailQueued = false;
 		}
+
+		$delivered = array_values(array_unique([...$queuedUserIds, ...$nativeSent]));
+		if ($delivered !== []) {
+			$this->activityPublisher->publishForRecipients(
+				Provider::SUBJECT_DOWNLOADED,
+				$subscriptionNode,
+				$actorUserId ?? $this->userSession->getUser()?->getUID(),
+				$delivered,
+			);
+		}
+		return $mailQueued;
 	}
 
 	private function getActorDisplayName(IL10N $l10n, bool $publicLinkActivity): string {

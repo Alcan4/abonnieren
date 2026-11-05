@@ -8,6 +8,8 @@ use OCA\Abonnieren\BackgroundJob\DeliverMailJob;
 use OCA\Abonnieren\BackgroundJob\ReconcileOutboxJob;
 use OCA\Abonnieren\Listeners\DownloadNotificationListener;
 use OCA\Abonnieren\Listeners\FileUploadListener;
+use OCA\Abonnieren\Notification\Notifier;
+use OCA\Abonnieren\Notification\NotificationPublisher;
 use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Service\SubscriptionService;
 use PHPUnit\Framework\TestCase;
@@ -24,6 +26,8 @@ final class RuntimeWiringTest extends TestCase {
 			DownloadNotificationListener::class,
 			DeliverMailJob::class,
 			ReconcileOutboxJob::class,
+			NotificationPublisher::class,
+			Notifier::class,
 		] as $className) {
 			self::assertInstanceOf($className, $container->get($className), $className);
 		}

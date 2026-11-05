@@ -6,6 +6,7 @@ namespace OCA\Abonnieren\Listeners;
 
 use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Activity\Provider;
+use OCA\Abonnieren\Notification\NotificationPublisher;
 use OCA\Abonnieren\Service\RecipientL10N;
 use OCA\Abonnieren\Service\RecipientMailDispatcher;
 use OCA\Abonnieren\Service\RecipientVisiblePath;
@@ -44,6 +45,7 @@ class FileUploadListener implements IEventListener {
 		private IUserSession $userSession,
 		private ShareContextResolver $shareResolver,
 		private ActivityPublisher $activityPublisher,
+		private NotificationPublisher $nativePublisher,
 		private RecipientMailDispatcher $mailDispatcher,
 		private RecipientVisiblePath $recipientVisiblePath,
 	) {
@@ -96,13 +98,24 @@ class FileUploadListener implements IEventListener {
 		}
 
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
-		$recipients = $this->subscriptionService->getRecipientEmailsForNode(
+		$recipients = $this->subscriptionService->getRecipientsForNode(
 			$subscriptionNode,
 			$eventBit,
 			$actorUserId,
 		);
 		if ($recipients !== []) {
-			$allQueued = $this->queueNotification($subscriptionNode, $recipients, $eventName, $eventBit, $actorUserId, $isPublicLink);
+			$nativeSent = $this->nativePublisher->publishForRecipients(
+				$subscriptionNode,
+				$eventBit,
+				array_keys($recipients),
+			);
+			$emailRecipients = array_filter($recipients, static fn ($email): bool => is_string($email) && $email !== '');
+			$queuedUserIds = [];
+			$allQueued = true;
+			if ($emailRecipients !== []) {
+				$queuedUserIds = $this->queueNotification($subscriptionNode, $emailRecipients, $eventName, $eventBit, $actorUserId, $isPublicLink);
+				$allQueued = count($queuedUserIds) === count($emailRecipients);
+			}
 			if ($allQueued) {
 				$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
 			}
@@ -115,7 +128,7 @@ class FileUploadListener implements IEventListener {
 				$activitySubject,
 				$subscriptionNode,
 				$actorUserId,
-				array_keys($recipients),
+				array_values(array_unique([...$queuedUserIds, ...$nativeSent])),
 			);
 		}
 
@@ -124,8 +137,11 @@ class FileUploadListener implements IEventListener {
 		}
 	}
 
-	/** @param array<string, string> $recipients */
-	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity): bool {
+	/**
+	 * @param array<string, string> $recipients
+	 * @return list<string> User IDs whose mail was queued.
+	 */
+	private function queueNotification(Node $node, array $recipients, string $eventName, int $eventBit, ?string $actorUserId, bool $publicLinkActivity): array {
 		try {
 			$isFolder = $node instanceof Folder;
 
@@ -167,7 +183,7 @@ class FileUploadListener implements IEventListener {
 				'Could not queue file event notification',
 				['nodeId' => (int)$node->getId(), 'event' => $eventName],
 			);
-			return count($queuedUserIds) === count($recipients);
+			return $queuedUserIds;
 		} catch (\Throwable $e) {
 			$this->logger->error('Could not queue file event notification', [
 				'app' => 'abonnieren',
@@ -175,7 +191,7 @@ class FileUploadListener implements IEventListener {
 				'event' => $eventName,
 				'exception' => $e,
 			]);
-			return false;
+			return [];
 		}
 	}
 

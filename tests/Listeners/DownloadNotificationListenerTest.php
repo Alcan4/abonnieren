@@ -6,6 +6,7 @@ namespace OCA\Abonnieren\Tests\Listeners;
 
 use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Listeners\DownloadNotificationListener;
+use OCA\Abonnieren\Notification\NotificationPublisher;
 use OCA\Abonnieren\Service\DownloadRequestPolicy;
 use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Service\RecipientL10N;
@@ -33,7 +34,7 @@ class DownloadNotificationListenerTest extends TestCase {
 		$requestPolicy = $this->createMock(DownloadRequestPolicy::class);
 		$requestPolicy->expects($this->once())->method('isFileDownload')->willReturn(false);
 		$subscriptions = $this->createMock(SubscriptionService::class);
-		$subscriptions->expects($this->never())->method('getRecipientEmailsForNode');
+		$subscriptions->expects($this->never())->method('getRecipientsForNode');
 		$shareResolver = $this->createMock(ShareContextResolver::class);
 		$shareResolver->expects($this->never())->method('resolveShareContext');
 
@@ -50,6 +51,7 @@ class DownloadNotificationListenerTest extends TestCase {
 			$this->createMock(IRequest::class),
 			$shareResolver,
 			$this->createMock(ActivityPublisher::class),
+			$this->createMock(NotificationPublisher::class),
 			$this->createMock(RecipientVisiblePath::class),
 			$requestPolicy,
 			$this->createMock(RecipientMailDispatcher::class),
