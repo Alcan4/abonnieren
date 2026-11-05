@@ -7,6 +7,7 @@ namespace OCA\Abonnieren\Tests\Service;
 use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Service\MailRetryPolicy;
 use OCA\Abonnieren\Service\SubscriptionService;
+use OCA\Abonnieren\Service\SummaryMailBuilder;
 use OCP\BackgroundJob\IJobList;
 use OCP\DB\IResult;
 use OCP\DB\QueryBuilder\IExpressionBuilder;
@@ -63,7 +64,8 @@ class MailOutboxDeliveryTest extends TestCase {
 		$mailer->expects($this->never())->method('send');
 		(new MailOutbox($db, $this->createMock(IJobList::class),
 			$this->createMock(IRootFolder::class), $this->createMock(IUserManager::class),
-			$this->createMock(SubscriptionService::class), $mailer, $this->createMock(LoggerInterface::class)))
+			$this->createMock(SubscriptionService::class), $mailer, $this->createMock(LoggerInterface::class),
+			$this->createMock(SummaryMailBuilder::class)))
 			->deliverById(17);
 	}
 
@@ -80,7 +82,8 @@ class MailOutboxDeliveryTest extends TestCase {
 		$subscriptions->expects($this->never())->method('getRecipientEmailsForNode');
 		(new MailOutbox($db, $this->createMock(IJobList::class), $root,
 			$this->createMock(IUserManager::class), $subscriptions, $mailer,
-			$this->createMock(LoggerInterface::class)))->deliverById(17);
+			$this->createMock(LoggerInterface::class), $this->createMock(SummaryMailBuilder::class)))
+			->deliverById(17);
 	}
 
 	/** @return array{IRootFolder,SubscriptionService,IUserManager} */
@@ -110,7 +113,8 @@ class MailOutboxDeliveryTest extends TestCase {
 		$mailer->method('createMessage')->willReturn($message);
 		$mailer->expects($this->once())->method('send')->with($message)->willReturn([]);
 		(new MailOutbox($db, $this->createMock(IJobList::class), $root,
-			$users, $subscriptions, $mailer, $this->createMock(LoggerInterface::class)))
+			$users, $subscriptions, $mailer, $this->createMock(LoggerInterface::class),
+			$this->createMock(SummaryMailBuilder::class)))
 			->deliverById(17);
 	}
 
@@ -135,9 +139,9 @@ class MailOutboxDeliveryTest extends TestCase {
 		$mailer = $this->createMock(IMailer::class);
 		$mailer->method('createMessage')->willReturn($this->createMock(IMessage::class));
 		$mailer->expects($this->once())->method('send')->willReturn([]);
-
 		(new MailOutbox($db, $this->createMock(IJobList::class), $root, $users,
-			$subscriptions, $mailer, $this->createMock(LoggerInterface::class)))->deliverById(17);
+			$subscriptions, $mailer, $this->createMock(LoggerInterface::class),
+			$this->createMock(SummaryMailBuilder::class)))->deliverById(17);
 	}
 
 	public function testFailedSendSchedulesRetryWithoutBlockingOthers(): void {
@@ -155,7 +159,8 @@ class MailOutboxDeliveryTest extends TestCase {
 				['id' => 17]);
 		$logger = $this->createMock(LoggerInterface::class);
 		$logger->expects($this->once())->method('error');
-		(new MailOutbox($db, $jobs, $root, $users, $subscriptions, $mailer, $logger))
+		(new MailOutbox($db, $jobs, $root, $users, $subscriptions, $mailer, $logger,
+			$this->createMock(SummaryMailBuilder::class)))
 			->deliverById(17);
 	}
 
@@ -171,6 +176,7 @@ class MailOutboxDeliveryTest extends TestCase {
 		$jobs = $this->createMock(IJobList::class);
 		$jobs->expects($this->never())->method('scheduleAfter');
 		(new MailOutbox($db, $jobs, $root, $users, $subscriptions, $mailer,
-			$this->createMock(LoggerInterface::class)))->deliverById(17);
+			$this->createMock(LoggerInterface::class), $this->createMock(SummaryMailBuilder::class)))
+			->deliverById(17);
 	}
 }

@@ -6,7 +6,10 @@ namespace OCA\Abonnieren\Service;
 
 /** Bounded, exponential retry delays in seconds. */
 final class MailRetryPolicy {
-	// With the capped backoff this keeps mail retrying for roughly two days.
+	/**
+	 * Keep retrying for roughly two days after the initial exponential ramp.
+	 * This survives ordinary mail-server maintenance while remaining bounded.
+	 */
 	public const MAX_ATTEMPTS = 48;
 	public const LEASE_SECONDS = 1800;
 	public const SWEEP_INTERVAL_SECONDS = 300;

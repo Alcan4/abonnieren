@@ -33,6 +33,7 @@ class ActivityPublisher {
 			return;
 		}
 
+
 		$author = $actorUserId ?? '';
 
 		foreach (array_unique($recipientUserIds) as $userId) {

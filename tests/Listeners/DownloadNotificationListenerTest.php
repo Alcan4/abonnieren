@@ -34,15 +34,25 @@ class DownloadNotificationListenerTest extends TestCase {
 		$requestPolicy = $this->createMock(DownloadRequestPolicy::class);
 		$requestPolicy->expects($this->once())->method('isFileDownload')->willReturn(false);
 		$subscriptions = $this->createMock(SubscriptionService::class);
-		$subscriptions->expects($this->never())->method('getRecipientsForNode');
+		$subscriptions->expects($this->never())->method('getRecipientPoliciesForNode');
+		$outbox = $this->createMock(MailOutbox::class);
+		$outbox->expects($this->never())->method('enqueue');
+		$mailer = $this->createMock(IMailer::class);
+		$mailer->expects($this->never())->method('createEMailTemplate');
+		$native = $this->createMock(NotificationPublisher::class);
+		$native->expects($this->never())->method('publishForRecipients');
+		$activity = $this->createMock(ActivityPublisher::class);
+		$activity->expects($this->never())->method('publishForRecipients');
+		$dispatcher = $this->createMock(RecipientMailDispatcher::class);
+		$dispatcher->expects($this->never())->method('deliver');
 		$shareResolver = $this->createMock(ShareContextResolver::class);
 		$shareResolver->expects($this->never())->method('resolveShareContext');
 
 		$cacheFactory = $this->createMock(ICacheFactory::class);
 		$cacheFactory->method('createDistributed')->willReturn($this->createMock(ICache::class));
 		$listener = new DownloadNotificationListener(
-			$this->createMock(MailOutbox::class),
-			$this->createMock(IMailer::class),
+			$outbox,
+			$mailer,
 			$this->createMock(RecipientL10N::class),
 			$this->createMock(LoggerInterface::class),
 			$subscriptions,
@@ -50,11 +60,11 @@ class DownloadNotificationListenerTest extends TestCase {
 			$this->createMock(IURLGenerator::class),
 			$this->createMock(IRequest::class),
 			$shareResolver,
-			$this->createMock(ActivityPublisher::class),
-			$this->createMock(NotificationPublisher::class),
+			$activity,
+			$native,
 			$this->createMock(RecipientVisiblePath::class),
+			$dispatcher,
 			$requestPolicy,
-			$this->createMock(RecipientMailDispatcher::class),
 			$cacheFactory,
 		);
 

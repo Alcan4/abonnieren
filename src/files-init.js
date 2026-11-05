@@ -75,6 +75,7 @@ class SubscriptionTab extends HTMLElement {
 			this._loadedNodeId = nodeId
 			this.renderForm(payload.rule)
 		} catch (error) {
+			if (sequence !== this._loadingSequence) return
 			console.error('Abonnieren: failed to load subscription', error)
 			this.renderState(t('abonnieren', 'The subscription could not be loaded.'), true)
 		}
@@ -94,7 +95,7 @@ class SubscriptionTab extends HTMLElement {
 		heading.textContent = t('abonnieren', 'Notifications for this object')
 		const description = document.createElement('p')
 		description.className = 'abonnieren-subscription-description'
-		description.textContent = t('abonnieren', 'Select the events for which you want to receive an email.')
+		description.textContent = t('abonnieren', 'Select the events and notification methods for this subscription.')
 		container.append(heading, description)
 
 		const eventMask = Number(rule?.eventMask || 0)
@@ -124,6 +125,193 @@ class SubscriptionTab extends HTMLElement {
 			container.append(separator, label)
 		}
 
+		const channelTitle = document.createElement('h4')
+		channelTitle.className = 'abonnieren-preferences-title'
+		channelTitle.textContent = t('abonnieren', 'Delivery methods')
+		const channelMask = Number(rule?.channelMask ?? 1)
+		const emailLabel = document.createElement('label')
+		emailLabel.className = 'abonnieren-subscription-option'
+		const emailChannel = document.createElement('input')
+		emailChannel.type = 'checkbox'
+		emailChannel.checked = (channelMask & 1) !== 0
+		emailLabel.append(emailChannel, document.createTextNode(t('abonnieren', 'Email')))
+		const pushLabel = document.createElement('label')
+		pushLabel.className = 'abonnieren-subscription-option'
+		const nativeChannel = document.createElement('input')
+		nativeChannel.type = 'checkbox'
+		nativeChannel.checked = (channelMask & 2) !== 0
+		pushLabel.append(nativeChannel, document.createTextNode(t('abonnieren', 'Nextcloud notifications (including supported push clients)')))
+		container.append(channelTitle, emailLabel, pushLabel)
+
+		const quietTitle = document.createElement('h4')
+		quietTitle.className = 'abonnieren-preferences-title'
+		quietTitle.textContent = t('abonnieren', 'Email quiet hours')
+		const quietOption = document.createElement('label')
+		quietOption.className = 'abonnieren-subscription-option'
+		const quietEnabled = document.createElement('input')
+		quietEnabled.type = 'checkbox'
+		quietEnabled.checked = Boolean(rule?.quietStart && rule?.quietEnd)
+		quietOption.append(quietEnabled, document.createTextNode(t('abonnieren', 'Do not send emails during quiet hours')))
+		const quietTimes = document.createElement('div')
+		quietTimes.className = 'abonnieren-quiet-time-row'
+		const quietStartLabel = document.createElement('label')
+		quietStartLabel.className = 'abonnieren-subscription-field'
+		quietStartLabel.textContent = t('abonnieren', 'From')
+		const quietStart = document.createElement('input')
+		quietStart.type = 'time'
+		quietStart.value = rule?.quietStart || '22:00'
+		quietStartLabel.append(quietStart)
+		const quietEndLabel = document.createElement('label')
+		quietEndLabel.className = 'abonnieren-subscription-field'
+		quietEndLabel.textContent = t('abonnieren', 'Until')
+		const quietEnd = document.createElement('input')
+		quietEnd.type = 'time'
+		quietEnd.value = rule?.quietEnd || '07:00'
+		quietEndLabel.append(quietEnd)
+		quietTimes.append(quietStartLabel, quietEndLabel)
+		const timezoneLabel = document.createElement('label')
+		timezoneLabel.className = 'abonnieren-subscription-field'
+		timezoneLabel.textContent = t('abonnieren', 'Time zone (IANA)')
+		const quietTimezone = document.createElement('input')
+		quietTimezone.type = 'text'
+		quietTimezone.maxLength = 64
+		quietTimezone.value = rule?.quietTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+		quietTimezone.placeholder = 'Europe/Berlin'
+		timezoneLabel.append(quietTimezone)
+		const quietHint = document.createElement('p')
+		quietHint.className = 'abonnieren-subscription-description'
+		quietHint.textContent = t('abonnieren', 'Emails will be sent after the quiet period ends. Nextcloud notifications remain immediate.')
+		const digestTitle = document.createElement('h4')
+		digestTitle.className = 'abonnieren-preferences-title'
+		digestTitle.textContent = t('abonnieren', 'Email summaries')
+		const digestLabel = document.createElement('label')
+		digestLabel.className = 'abonnieren-subscription-field'
+		digestLabel.textContent = t('abonnieren', 'Email frequency')
+		const digestMode = document.createElement('select')
+		for (const [value, label] of [
+			['instant', 'As events occur'],
+			['hourly', 'Hourly summary'],
+			['daily', 'Daily summary'],
+		]) {
+			const option = document.createElement('option')
+			option.value = value
+			option.textContent = t('abonnieren', label)
+			digestMode.appendChild(option)
+		}
+		digestMode.value = rule?.digestMode || 'instant'
+		digestLabel.append(digestMode)
+		const digestTimeLabel = document.createElement('label')
+		digestTimeLabel.className = 'abonnieren-subscription-field'
+		digestTimeLabel.textContent = t('abonnieren', 'Daily email time')
+		const digestTime = document.createElement('input')
+		digestTime.type = 'time'
+		digestTime.value = rule?.digestTime || '08:00'
+		digestTimeLabel.append(digestTime)
+		const digestHint = document.createElement('p')
+		digestHint.className = 'abonnieren-subscription-description'
+		digestHint.textContent = t('abonnieren', 'Email summaries group up to 50 events per message. Nextcloud notifications remain immediate.')
+		const setScheduleVisible = () => {
+			quietTimes.hidden = !quietEnabled.checked
+			timezoneLabel.hidden = !quietEnabled.checked && digestMode.value === 'instant'
+			digestTimeLabel.hidden = digestMode.value !== 'daily'
+		}
+		quietEnabled.addEventListener('change', setScheduleVisible)
+		digestMode.addEventListener('change', setScheduleVisible)
+		setScheduleVisible()
+		container.append(quietTitle, quietOption, quietTimes, timezoneLabel, quietHint,
+			digestTitle, digestLabel, digestTimeLabel, digestHint)
+
+		const lifecycleTitle = document.createElement('h4')
+		lifecycleTitle.className = 'abonnieren-preferences-title'
+		lifecycleTitle.textContent = t('abonnieren', 'Subscription duration')
+		const toLocalDateTime = (seconds) => {
+			if (!seconds || seconds <= 0) return ''
+			const date = new Date(seconds * 1000)
+			const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+			return local.toISOString().slice(0, 16)
+		}
+		const toUnixSeconds = (value) => {
+			if (!value) return 0
+			const parsed = new Date(value).getTime()
+			if (!Number.isFinite(parsed)) throw new Error(t('abonnieren', 'Invalid subscription date.'))
+			return Math.floor(parsed / 1000)
+		}
+		const expiresLabel = document.createElement('label')
+		expiresLabel.className = 'abonnieren-subscription-field'
+		expiresLabel.textContent = t('abonnieren', 'Subscription expires at (optional)')
+		const expiresAt = document.createElement('input')
+		expiresAt.type = 'datetime-local'
+		expiresAt.value = toLocalDateTime(rule?.expiresAt)
+		expiresLabel.append(expiresAt)
+		const snoozeLabel = document.createElement('label')
+		snoozeLabel.className = 'abonnieren-subscription-field'
+		snoozeLabel.textContent = t('abonnieren', 'Snooze notifications until (optional)')
+		const snoozedUntil = document.createElement('input')
+		snoozedUntil.type = 'datetime-local'
+		snoozedUntil.value = toLocalDateTime(rule?.snoozedUntil)
+		snoozeLabel.append(snoozedUntil)
+		const lifecycleHint = document.createElement('p')
+		lifecycleHint.className = 'abonnieren-subscription-description'
+		lifecycleHint.textContent = t('abonnieren', 'Leave either date empty for no limit. Snoozing mutes new notifications; expiration ends this subscription.')
+		if (rule?.isExpired) {
+			const expiredNote = document.createElement('p')
+			expiredNote.className = 'abonnieren-subscription-feedback error'
+			expiredNote.textContent = t('abonnieren', 'This subscription has expired. Clear or update its expiration date to reactivate it.')
+			container.append(expiredNote)
+		}
+		container.append(lifecycleTitle, expiresLabel, snoozeLabel, lifecycleHint)
+
+		const settingsTitle = document.createElement('h4')
+		settingsTitle.className = 'abonnieren-preferences-title'
+		settingsTitle.textContent = t('abonnieren', 'Notification filters')
+
+		const delayLabel = document.createElement('label')
+		delayLabel.className = 'abonnieren-subscription-field'
+		delayLabel.textContent = t('abonnieren', 'Suppress repeated notifications for')
+		const delay = document.createElement('select')
+		for (const [seconds, caption] of [
+			[0, 'Off'], [15, '15 seconds'], [30, '30 seconds'], [60, '1 minute'],
+			[120, '2 minutes'], [300, '5 minutes'], [600, '10 minutes'],
+			[1800, '30 minutes'], [3600, '1 hour'],
+		]) {
+			const option = document.createElement('option')
+			option.value = String(seconds)
+			option.textContent = t('abonnieren', caption)
+			delay.appendChild(option)
+		}
+		delay.value = String(rule?.debounceSeconds ?? 600)
+		delayLabel.append(delay)
+
+		const extensionsLabel = document.createElement('label')
+		extensionsLabel.className = 'abonnieren-subscription-field'
+		extensionsLabel.textContent = t('abonnieren', 'Exclude file extensions (comma-separated)')
+		const extensions = document.createElement('input')
+		extensions.type = 'text'
+		extensions.placeholder = 'tmp, log, .bak, tar.gz'
+		extensions.value = (rule?.excludedExtensions || []).join(', ')
+		extensions.maxLength = 500
+		extensionsLabel.append(extensions)
+		const help = document.createElement('p')
+		help.className = 'abonnieren-subscription-description'
+		help.textContent = t('abonnieren', 'Excluded file types do not generate notifications for this subscription. Folder events are unaffected.')
+		container.append(settingsTitle, delayLabel, extensionsLabel, help)
+		let excludedFoldersInput = null
+		if (this.isFolder()) {
+			const excludedFoldersLabel = document.createElement('label')
+			excludedFoldersLabel.className = 'abonnieren-subscription-field'
+			excludedFoldersLabel.textContent = t('abonnieren', 'Exclude subfolders (relative paths, comma-separated)')
+			excludedFoldersInput = document.createElement('input')
+			excludedFoldersInput.type = 'text'
+			excludedFoldersInput.maxLength = 1000
+			excludedFoldersInput.placeholder = 'Archive, Projects/Drafts'
+			excludedFoldersInput.value = (rule?.excludedFolders || []).join(', ')
+			excludedFoldersLabel.append(excludedFoldersInput)
+			const excludedFoldersHelp = document.createElement('p')
+			excludedFoldersHelp.className = 'abonnieren-subscription-description'
+			excludedFoldersHelp.textContent = t('abonnieren', 'Exclude a folder and all its descendants. Paths are case-sensitive, relative to this subscribed folder.')
+			container.append(excludedFoldersLabel, excludedFoldersHelp)
+		}
+
 		const feedback = document.createElement('p')
 		feedback.className = 'abonnieren-subscription-feedback'
 		const actions = document.createElement('div')
@@ -144,18 +332,45 @@ class SubscriptionTab extends HTMLElement {
 		save.addEventListener('click', () => {
 			let mask = 0
 			checkboxes.forEach((checkbox, bit) => { if (checkbox.checked) mask |= bit })
-			this.saveRule(mask, Boolean(recursive?.checked), save, null, feedback)
+			if (mask === 0) {
+				feedback.className = 'abonnieren-subscription-feedback error'
+				feedback.textContent = t('abonnieren', 'Select at least one event, or use Remove subscription.')
+				return
+			}
+			if (!emailChannel.checked && !nativeChannel.checked) {
+				feedback.className = 'abonnieren-subscription-feedback error'
+				feedback.textContent = t('abonnieren', 'Select at least one delivery method.')
+				return
+			}
+			try {
+				this.saveRule(mask, Boolean(recursive?.checked), save, null, feedback, {
+					debounceSeconds: Number(delay.value),
+					excludedExtensions: extensions.value,
+					excludedFolders: excludedFoldersInput?.value || '',
+					channelMask: Number(emailChannel.checked) + 2 * Number(nativeChannel.checked),
+					quietStart: quietEnabled.checked ? quietStart.value : '',
+					quietEnd: quietEnabled.checked ? quietEnd.value : '',
+					quietTimezone: quietTimezone.value.trim() || 'UTC',
+					digestMode: digestMode.value,
+					digestTime: digestTime.value,
+					expiresAt: toUnixSeconds(expiresAt.value),
+					snoozedUntil: toUnixSeconds(snoozedUntil.value),
+				})
+			} catch (error) {
+				feedback.className = 'abonnieren-subscription-feedback error'
+				feedback.textContent = error.message || t('abonnieren', 'Invalid subscription settings.')
+			}
 		})
 		this.replaceChildren(container)
 	}
 
-	async saveRule(eventMask, recursive, save, second, feedback) {
+	async saveRule(eventMask, recursive, save, second, feedback, preferences = {}) {
 		save.disabled = true
 		if (second) second.disabled = true
 		feedback.textContent = ''
 		try {
 			await this.request(eventMask === 0 ? 'delete_rule' : 'save_rule', {
-				nodeId: this.getNodeId(), eventMask, recursive,
+				nodeId: this.getNodeId(), eventMask, recursive, ...preferences,
 			})
 			this._loadedNodeId = null
 			feedback.className = 'abonnieren-subscription-feedback success'

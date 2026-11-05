@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OCA\Abonnieren\Controller;
 
 use OCA\Abonnieren\Service\SubscriptionService;
+use OCA\Abonnieren\Service\SubscriptionSettings;
 use OCP\AppFramework\Controller;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
@@ -97,8 +98,43 @@ class SubscriptionController extends Controller {
 			$this->request->getParam('recursive', false),
 			FILTER_VALIDATE_BOOLEAN,
 		);
+		$debounceRaw = (string)$this->request->getParam('debounceSeconds', (string)SubscriptionService::DEBOUNCE_SECONDS);
+		if (!ctype_digit($debounceRaw)) {
+			return new DataResponse(['success' => false, 'message' => 'Invalid suppression window'], Http::STATUS_BAD_REQUEST);
+		}
+		$excludedExtensions = (string)$this->request->getParam('excludedExtensions', '');
+		$channelsRaw = (string)$this->request->getParam('channelMask', (string)SubscriptionService::CHANNEL_EMAIL);
+		if (!ctype_digit($channelsRaw)) {
+			return new DataResponse(['success' => false, 'message' => 'Invalid notification channels'], Http::STATUS_BAD_REQUEST);
+		}
+
+		$quietStart = (string)$this->request->getParam('quietStart', '');
+		$quietEnd = (string)$this->request->getParam('quietEnd', '');
+		$quietTimezone = (string)$this->request->getParam('quietTimezone', 'UTC');
+		$digestMode = (string)$this->request->getParam('digestMode', 'instant');
+		$digestTime = (string)$this->request->getParam('digestTime', '08:00');
+		$expiresRaw = (string)$this->request->getParam('expiresAt', '0');
+		$snoozedRaw = (string)$this->request->getParam('snoozedUntil', '0');
+		if (!ctype_digit($expiresRaw) || !ctype_digit($snoozedRaw)
+			|| strlen($expiresRaw) > 12 || strlen($snoozedRaw) > 12) {
+			return new DataResponse(['success' => false, 'message' => 'Invalid subscription dates'], Http::STATUS_BAD_REQUEST);
+		}
+
 		try {
-			$this->subscriptionService->upsertRule($userId, $nodeId, $eventMask, $recursive);
+			$this->subscriptionService->upsertRule($userId, $nodeId, $eventMask, $recursive,
+				new SubscriptionSettings(
+					debounceSeconds: (int)$debounceRaw,
+					excludedExtensions: $excludedExtensions,
+					channelMask: (int)$channelsRaw,
+					quietStart: $quietStart,
+					quietEnd: $quietEnd,
+					quietTimezone: $quietTimezone,
+					digestMode: $digestMode,
+					digestTime: $digestTime,
+					expiresAt: (int)$expiresRaw,
+					snoozedUntil: (int)$snoozedRaw,
+					excludedFolders: (string)$this->request->getParam('excludedFolders', ''),
+				));
 		} catch (\InvalidArgumentException $e) {
 			return new DataResponse(['success' => false, 'message' => $e->getMessage()], Http::STATUS_BAD_REQUEST);
 		}

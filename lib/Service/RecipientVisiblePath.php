@@ -7,7 +7,11 @@ namespace OCA\Abonnieren\Service;
 use OCP\Files\IRootFolder;
 use OCP\Files\Node;
 
-/** Resolve paths only inside the recipient's accessible user folder. */
+/**
+ * Resolve paths exclusively inside the recipient's accessible user folder.
+ * The original owner path can contain private ancestor names that are not
+ * part of the recipient's shared mount.
+ */
 class RecipientVisiblePath {
 	public function __construct(private IRootFolder $rootFolder) {
 	}
@@ -16,7 +20,6 @@ class RecipientVisiblePath {
 		if ($userId === '' || (int)$node->getId() < 1) {
 			return null;
 		}
-
 		try {
 			$target = $deleted ? $node->getParent() : $node;
 			$matches = $this->rootFolder->getUserFolder($userId)->getById((int)$target->getId());
@@ -31,7 +34,8 @@ class RecipientVisiblePath {
 			if (!$deleted) {
 				return $visible;
 			}
-
+			// The deleted object itself is no longer resolvable. Only expose
+			// its original name below a still-accessible recipient parent.
 			$name = $node->getName();
 			if ($name === '' || str_contains($name, '/')) {
 				return null;

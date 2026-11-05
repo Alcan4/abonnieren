@@ -6,7 +6,6 @@ namespace OCA\Abonnieren\Notification;
 
 use OCA\Abonnieren\AppInfo\Application;
 use OCA\Abonnieren\Service\RecipientVisiblePath;
-use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Files\Folder;
 use OCP\Files\Node;
 use OCP\IURLGenerator;
@@ -43,7 +42,7 @@ class NotificationPublisher {
 						'event' => $event,
 						'kind' => $node instanceof Folder ? 'folder' : 'file',
 					]);
-				if ($event !== SubscriptionService::EVENT_DELETION) {
+				if ($event !== \OCA\Abonnieren\Service\SubscriptionService::EVENT_DELETION) {
 					$path = $this->recipientVisiblePath->pathFor($userId, $node);
 					if ($path !== null) {
 						$notification->setLink($this->urlGenerator->linkToRouteAbsolute('files.viewcontroller.showFile', [
@@ -65,4 +64,5 @@ class NotificationPublisher {
 		}
 		return $sent;
 	}
+
 }

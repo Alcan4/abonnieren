@@ -6,13 +6,13 @@ namespace OCA\Abonnieren\Listeners;
 
 use OCA\Abonnieren\Activity\ActivityPublisher;
 use OCA\Abonnieren\Activity\Provider;
-use OCA\Abonnieren\Notification\NotificationPublisher;
-use OCA\Abonnieren\Service\DownloadRequestPolicy;
-use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Service\RecipientL10N;
 use OCA\Abonnieren\Service\RecipientMailDispatcher;
-use OCA\Abonnieren\Service\RecipientVisiblePath;
+use OCA\Abonnieren\Service\DownloadRequestPolicy;
+use OCA\Abonnieren\Service\MailOutbox;
+use OCA\Abonnieren\Notification\NotificationPublisher;
 use OCA\Abonnieren\Service\ShareContextResolver;
+use OCA\Abonnieren\Service\RecipientVisiblePath;
 use OCA\Abonnieren\Service\SubscriptionService;
 use OCP\Constants;
 use OCP\EventDispatcher\Event;
@@ -51,8 +51,8 @@ class DownloadNotificationListener implements IEventListener {
 		private ActivityPublisher $activityPublisher,
 		private NotificationPublisher $nativePublisher,
 		private RecipientVisiblePath $recipientVisiblePath,
-		private DownloadRequestPolicy $downloadRequestPolicy,
 		private RecipientMailDispatcher $mailDispatcher,
+		private DownloadRequestPolicy $downloadRequestPolicy,
 		ICacheFactory $cacheFactory,
 	) {
 		$this->cache = $cacheFactory->createDistributed('abonnieren_event_debounce');
@@ -91,15 +91,10 @@ class DownloadNotificationListener implements IEventListener {
 		$actorUserId = $user?->getUID();
 
 		$actorKey = $actorUserId ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
-		$cacheKey = implode(':', ['download', (string)$folder->getId(), $actorKey]);
-		if ($this->cache->get($cacheKey) === true) {
-			return;
-		}
+		$cacheKeyBase = implode(':', ['download', (string)$folder->getId(), $actorKey]);
 		$this->cache->set('request:' . $this->request->getId(), $folder->getPath(), SubscriptionService::DEBOUNCE_SECONDS);
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($folder, $share);
-		if ($this->notify($share, $folder, $subscriptionNode, $actorUserId)) {
-			$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
-		}
+		$this->notify($share, $folder, $subscriptionNode, $cacheKeyBase, $actorUserId);
 	}
 
 	private function handleFileDownload(BeforeNodeReadEvent $event): void {
@@ -122,43 +117,52 @@ class DownloadNotificationListener implements IEventListener {
 		}
 
 		$actorKey = $actorUserId ?? ($share !== null ? 'share_' . $share->getId() : 'anon');
-		$cacheKey = implode(':', ['download', (string)$node->getId(), $actorKey]);
-		if ($this->cache->get($cacheKey) === true) {
-			return;
-		}
+		$cacheKeyBase = implode(':', ['download', (string)$node->getId(), $actorKey]);
 		$subscriptionNode = $this->shareResolver->resolveOwnerNode($node, $share);
-		if ($this->notify($share, $node, $subscriptionNode, $actorUserId)) {
-			$this->cache->set($cacheKey, true, SubscriptionService::DEBOUNCE_SECONDS);
-		}
+		$this->notify($share, $node, $subscriptionNode, $cacheKeyBase, $actorUserId);
 	}
 
-	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode, ?string $actorUserId = null): bool {
-		$recipients = $this->subscriptionService->getRecipientsForNode(
+	private function notify(?IShare $share, File|Folder $node, Node $subscriptionNode, string $cacheKeyBase, ?string $actorUserId = null): void {
+		$policies = $this->subscriptionService->getRecipientPoliciesForNode(
 			$subscriptionNode,
 			SubscriptionService::EVENT_DOWNLOAD,
 			$actorUserId ?? $this->userSession->getUser()?->getUID(),
 		);
-		if ($recipients === []) {
-			return true;
+		$emailRecipients = [];
+		$nativeRecipients = [];
+		foreach ($policies as $userId => $policy) {
+			$seconds = $policy['debounceSeconds'];
+			if (($policy['channelMask'] & SubscriptionService::CHANNEL_EMAIL) !== 0
+				&& $policy['email'] !== ''
+				&& ($seconds === 0 || $this->cache->get($cacheKeyBase . ':' . $userId . ':email') !== true)) {
+				$emailRecipients[$userId] = $policy['email'];
+			}
+			if (($policy['channelMask'] & SubscriptionService::CHANNEL_NOTIFICATION) !== 0
+				&& ($seconds === 0 || $this->cache->get($cacheKeyBase . ':' . $userId . ':native') !== true)) {
+				$nativeRecipients[] = $userId;
+			}
+		}
+		$nativeSent = $this->nativePublisher->publishForRecipients(
+			$subscriptionNode, SubscriptionService::EVENT_DOWNLOAD, $nativeRecipients);
+		foreach ($nativeSent as $userId) {
+			$seconds = $policies[$userId]['debounceSeconds'];
+			if ($seconds > 0) {
+				$this->cache->set($cacheKeyBase . ':' . $userId . ':native', true, $seconds);
+			}
 		}
 
-		$nativeSent = $this->nativePublisher->publishForRecipients(
-			$subscriptionNode,
-			SubscriptionService::EVENT_DOWNLOAD,
-			array_keys($recipients),
-		);
-		$emailRecipients = array_filter($recipients, static fn ($email): bool => is_string($email) && $email !== '');
-		$queuedUserIds = [];
-		$mailQueued = true;
-
+		$emailQueued = [];
+		if ($emailRecipients !== []) {
 		try {
 			$isFolder = $node instanceof Folder;
 			$isPublicLink = $this->shareResolver->isPublicShare($share);
-			$queuedUserIds = $this->mailDispatcher->deliver(
+
+
+			$emailQueued = $this->mailDispatcher->deliver(
 				$emailRecipients,
-				function (string $userId, string $email) use ($node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink): void {
+				function (string $userId, string $email) use ($share, $node, $subscriptionNode, $actorUserId, $isFolder, $isPublicLink, $policies): void {
 					$l10n = $this->recipientL10n->forUser($userId);
-					$path = $this->recipientVisiblePath->pathFor($userId, $subscriptionNode);
+					$recipientPath = $this->recipientVisiblePath->pathFor($userId, $subscriptionNode);
 					$subject = $isFolder
 						? ($isPublicLink
 							? $l10n->t('Public share folder downloaded')
@@ -180,8 +184,8 @@ class DownloadNotificationListener implements IEventListener {
 					$template->addHeading($subject);
 					$template->addBodyText($description);
 					$template->addBodyListItem($l10n->t('Name:') . ' ' . $node->getName());
-					if ($path !== null) {
-						$template->addBodyListItem($l10n->t('Path:') . ' ' . $path);
+					if ($recipientPath !== null) {
+						$template->addBodyListItem($l10n->t('Path:') . ' ' . $recipientPath);
 					}
 					if ($node instanceof File) {
 						$template->addBodyListItem($l10n->t('Size:') . ' ' . $this->formatSize($node->getSize()));
@@ -189,13 +193,16 @@ class DownloadNotificationListener implements IEventListener {
 					$template->addBodyListItem($l10n->t('Downloaded by:') . ' ' . $this->getActorDisplayName($l10n, $isPublicLink));
 					$template->addBodyListItem($l10n->t('Time:') . ' ' . date('d.m.Y H:i:s'));
 
-					if ($path !== null) {
+					// Never retain a public-share capability token in delayed SMTP
+					// jobs or email templates. The subscriber must open the file
+					// through their own authenticated Nextcloud access.
+					if ($recipientPath !== null) {
 						$template->addBodyButton(
 							$l10n->t('Open file'),
 							$this->urlGenerator->linkToRouteAbsolute(
 								'files.viewcontroller.showFile',
 								[
-									'dir' => $subscriptionNode instanceof Folder ? $path : dirname($path),
+									'dir' => $subscriptionNode instanceof Folder ? $recipientPath : dirname($recipientPath),
 									'fileid' => (string)$subscriptionNode->getId(),
 								],
 							),
@@ -203,12 +210,17 @@ class DownloadNotificationListener implements IEventListener {
 					}
 					$template->addFooter();
 					$this->outbox->enqueue($userId, $subscriptionNode, SubscriptionService::EVENT_DOWNLOAD,
-						$actorUserId, false, $subject, $template->renderText(), $template->renderHtml());
+						$actorUserId, false, $subject, $template->renderText(), $template->renderHtml(), $policies[$userId]);
 				},
 				'Could not queue download notification',
 				['shareId' => $share !== null ? (int)$share->getId() : null, 'nodeId' => (int)$node->getId()],
 			);
-			$mailQueued = count($queuedUserIds) === count($emailRecipients);
+			foreach ($emailQueued as $userId) {
+				$seconds = $policies[$userId]['debounceSeconds'];
+				if ($seconds > 0) {
+					$this->cache->set($cacheKeyBase . ':' . $userId . ':email', true, $seconds);
+				}
+			}
 		} catch (\Throwable $e) {
 			$this->logger->error('Could not queue download notification', [
 				'app' => 'abonnieren',
@@ -216,20 +228,16 @@ class DownloadNotificationListener implements IEventListener {
 				'nodeId' => (int)$node->getId(),
 				'exception' => $e,
 			]);
-			$mailQueued = false;
 		}
-
-		$delivered = array_values(array_unique([...$queuedUserIds, ...$nativeSent]));
-		if ($delivered !== []) {
-			$this->activityPublisher->publishForRecipients(
-				Provider::SUBJECT_DOWNLOADED,
-				$subscriptionNode,
-				$actorUserId ?? $this->userSession->getUser()?->getUID(),
-				$delivered,
-			);
 		}
-		return $mailQueued;
+		$this->activityPublisher->publishForRecipients(
+			Provider::SUBJECT_DOWNLOADED,
+			$subscriptionNode,
+			$actorUserId ?? $this->userSession->getUser()?->getUID(),
+			array_values(array_unique([...$emailQueued, ...$nativeSent])),
+		);
 	}
+
 
 	private function getActorDisplayName(IL10N $l10n, bool $publicLinkActivity): string {
 		$user = $this->userSession->getUser();

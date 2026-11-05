@@ -29,7 +29,8 @@ jobs:
         run: find appinfo lib tests -type f -name '*.php' -print0 | xargs -0 -n1 php -l
 
       - name: Validate app metadata XML
-        run: php -r '$xml = simplexml_load_file("appinfo/info.xml"); if ($xml === false) { exit(1); }'
+        run: |
+          php -r '$xml = simplexml_load_file("appinfo/info.xml"); if ($xml === false) { exit(1); }'
 
   phpunit-nextcloud:
     name: PHPUnit (Nextcloud ${{ matrix.nextcloud }})
@@ -88,9 +89,173 @@ jobs:
         working-directory: apps/abonnieren
         run: composer run test:unit
 
+      - name: Exercise real concurrent database updates
+        run: php apps/abonnieren/tests/Integration/concurrent_upload_smoke.php
+
+      - name: Exercise Nextcloud background-job worker and inaccessible queued mail
+        run: |
+          marker="/tmp/abo-cron-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$.id"
+          trap 'rm -f "$marker"' EXIT
+          php apps/abonnieren/tests/Integration/cron_delivery_smoke.php seed "$marker"
+          php occ background:cron
+          php occ background-job:worker --once 'OCA\Abonnieren\BackgroundJob\DeliverMailJob'
+          php apps/abonnieren/tests/Integration/cron_delivery_smoke.php verify "$marker"
+
       - name: Show test-server logs on failure
         if: failure()
         run: |
           if test -f data/nextcloud.log; then
             tail -n 100 data/nextcloud.log
+          fi
+
+  frontend-build:
+    name: Frontend lint and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Enable pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint JavaScript
+        run: pnpm run lint
+
+      - name: Build production assets
+        run: pnpm run build
+
+  upgrade-legacy-app:
+    name: Upgrade from app 1.1.2 (Nextcloud ${{ matrix.nextcloud }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - nextcloud: '34'
+            ref: v34.0.5
+          - nextcloud: '35'
+            ref: stable35
+    steps:
+      - name: Checkout Nextcloud ${{ matrix.nextcloud }}
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          submodules: true
+          repository: nextcloud/server
+          ref: ${{ matrix.ref }}
+
+      - name: Checkout Abonnieren full history
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          path: apps/abonnieren
+
+      - name: Set up PHP 8.3 and SQLite
+        uses: shivammathur/setup-php@ccf2c627fe61b1b4d924adfcbd19d661a18133a0 # v2.35.2
+        with:
+          php-version: '8.3'
+          extensions: bz2, ctype, curl, dom, fileinfo, gd, iconv, intl, mbstring, openssl, pcntl, pdo_sqlite, sqlite3, xml, xmlreader, xmlwriter, zip
+          coverage: none
+          ini-file: development
+          ini-values: disable_functions=
+
+      - name: Install original 1.1.2 app and create a legacy subscription
+        run: |
+          git -C apps/abonnieren rev-parse HEAD > /tmp/abonnieren-new-sha
+          # Immutable repository state containing Abonnieren 1.1.2.
+          git -C apps/abonnieren checkout --detach fd3a18e3271c422fb8867b5fcb00aef59410e864
+          mkdir -p data
+          php occ maintenance:install --database=sqlite --admin-user=admin --admin-pass=admin
+          php occ app:enable abonnieren
+          php -r '
+            require "lib/base.php";
+            $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
+            if (($versions["abonnieren"] ?? null) !== "1.1.2") {
+              throw new \RuntimeException("Baseline app version wrong: " . json_encode($versions["abonnieren"] ?? null));
+            }
+          '
+          php -r '
+            require "lib/base.php";
+            $db = \OC::$server->get(\OCP\IDBConnection::class);
+            $q = $db->getQueryBuilder();
+            $q->insert("abonnieren_object_rules")->values([
+              "user_id" => $q->createNamedParameter("ci_legacy"),
+              "node_id" => $q->createNamedParameter(991234),
+              "event_mask" => $q->createNamedParameter(2),
+              "recursive" => $q->createNamedParameter(1),
+              "created_at" => $q->createNamedParameter(time()),
+              "updated_at" => $q->createNamedParameter(time()),
+            ]);
+            $q->executeStatement();
+          '
+
+      - name: Upgrade local app code and migrate existing database
+        run: |
+          php occ app:disable abonnieren
+          git -C apps/abonnieren checkout --detach "$(cat /tmp/abonnieren-new-sha)"
+          php occ app:enable abonnieren
+          php -r '
+            require "lib/base.php";
+            $versions = \OC::$server->get(\OCP\IAppConfig::class)->getAppInstalledVersions();
+            if (($versions["abonnieren"] ?? null) !== "1.1.12") {
+              throw new \RuntimeException("App migration version wrong: " . json_encode($versions["abonnieren"] ?? null));
+            }
+          '
+
+      - name: Verify existing subscription survived with safe feature defaults
+        run: |
+          php -r '
+            require "lib/base.php";
+            $db = \OC::$server->get(\OCP\IDBConnection::class);
+            $q = $db->getQueryBuilder();
+            $q->select("*")->from("abonnieren_object_rules")
+              ->where($q->expr()->eq("user_id", $q->createNamedParameter("ci_legacy")));
+            $result = $q->executeQuery();
+            $row = $result->fetch();
+            $result->closeCursor();
+            if (!is_array($row)
+              || (int)$row["node_id"] !== 991234
+              || (int)$row["event_mask"] !== 2
+              || (int)$row["recursive"] !== 1
+              || (int)$row["debounce_seconds"] !== 600
+              || (int)$row["channel_mask"] !== 1
+              || (string)$row["excluded_extensions"] !== ""
+              || (string)$row["excluded_folders"] !== ""
+              || (int)$row["expires_at"] !== 0
+              || (int)$row["snoozed_until"] !== 0
+              || (string)$row["digest_mode"] !== "instant") {
+              throw new \RuntimeException("Existing subscription lost or defaults changed during migration");
+            }
+            $q = $db->getQueryBuilder();
+            $q->select("source_rule_id", "source_rule_hash", "source_rule_expires_at")
+              ->from("abonnieren_mail_outbox")->setMaxResults(1);
+            $r = $q->executeQuery();
+            $r->closeCursor();
+            foreach (["abonnieren_mail_outbox", "abonnieren_upload_scopes"] as $table) {
+              $q = $db->getQueryBuilder();
+              $q->select("*")->from($table)->setMaxResults(1);
+              $r = $q->executeQuery();
+              $r->closeCursor();
+            }
+            echo "Legacy record and new tables verified\n";
+          '
+
+      - name: Show Nextcloud log on failure
+        if: failure()
+        run: |
+          if test -f data/nextcloud.log; then
+            tail -n 60 data/nextcloud.log
           fi

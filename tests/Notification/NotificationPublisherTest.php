@@ -15,9 +15,10 @@ use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
 
 class NotificationPublisherTest extends TestCase {
-	public function testPublishesNativeNotificationWithRecipientVisibleLink(): void {
+	public function testPublishesNativeNotificationWithoutSendingEmail(): void {
 		$node = $this->createMock(File::class);
 		$node->method('getId')->willReturn(42);
+		$node->method('getPath')->willReturn('/alice/files/test.txt');
 		$manager = $this->createMock(IManager::class);
 		$notification = $this->createMock(INotification::class);
 		foreach (['setApp', 'setUser', 'setDateTime', 'setObject', 'setSubject'] as $method) {
@@ -30,7 +31,8 @@ class NotificationPublisherTest extends TestCase {
 			->with('files.viewcontroller.showFile', ['dir' => '/Shared', 'fileid' => '42'])
 			->willReturn('https://cloud.example.test/apps/files/files/42');
 		$notification->expects($this->once())->method('setLink')
-			->with('https://cloud.example.test/apps/files/files/42')->willReturnSelf();
+			->with('https://cloud.example.test/apps/files/files/42')
+			->willReturnSelf();
 		$paths = $this->createMock(RecipientVisiblePath::class);
 		$paths->method('pathFor')->with('subscriber', $node)->willReturn('/Shared/test.txt');
 		$publisher = new NotificationPublisher($manager, $url, $this->createMock(LoggerInterface::class), $paths);
@@ -39,7 +41,7 @@ class NotificationPublisherTest extends TestCase {
 			$node, SubscriptionService::EVENT_MODIFICATION, ['subscriber', 'subscriber']));
 	}
 
-	public function testFailureForOneRecipientDoesNotBlockTheNext(): void {
+	public function testFailureForOneNativeRecipientDoesNotBlockTheNext(): void {
 		$node = $this->createMock(File::class);
 		$node->method('getId')->willReturn(42);
 		$manager = $this->createMock(IManager::class);
@@ -58,7 +60,6 @@ class NotificationPublisherTest extends TestCase {
 		$logger = $this->createMock(LoggerInterface::class);
 		$logger->expects($this->once())->method('error');
 		$publisher = new NotificationPublisher($manager, $this->createMock(IURLGenerator::class), $logger, $this->createMock(RecipientVisiblePath::class));
-
 		self::assertSame(['second'], $publisher->publishForRecipients(
 			$node, SubscriptionService::EVENT_DELETION, ['first', 'second']));
 	}

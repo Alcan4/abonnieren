@@ -3,9 +3,33 @@
 	  xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
 	<id>abonnieren</id>
 	<name>Abonnieren</name>
-	<summary>File and folder subscriptions with email notifications</summary>
-	<description>Subscribe to files and folders and receive email notifications for downloads, uploads, modifications and deletions. Rules can be managed per object in the Files sidebar or from the subscription overview.</description>
-	<version>1.1.2</version>
+	<summary>Flexible file and folder subscriptions with private, reliable notifications</summary>
+	<description><![CDATA[
+Subscribe to individual files or folders and choose how Nextcloud informs you when other people upload, modify, delete or download content.
+
+## Flexible subscriptions
+
+- Create and remove rules directly in the Files sidebar or from **My subscriptions**.
+- Subscribe recursively to folders, with more specific rules overriding inherited settings.
+- Choose email, native Nextcloud notifications, or both for each subscription.
+- Configure suppression windows, extension and folder exclusions, quiet hours, hourly or daily digests, temporary subscriptions and snoozing.
+
+## Reliable delivery
+
+- Email is delivered asynchronously so uploads and downloads are not blocked by SMTP failures.
+- Temporary failures are retried with bounded backoff, and related uploads can be grouped into one summary.
+- Access and subscription permissions are checked again immediately before delayed delivery.
+
+## Privacy-aware notifications
+
+- Notifications use the path visible to the recipient and never persist public-share tokens.
+- Revoked or inaccessible content is cancelled and scrubbed before delivery.
+- Internal preview, cron, CLI and Office/WOPI reads are not reported as user downloads.
+- A subscriber's own authenticated actions are excluded.
+
+Supports Nextcloud 34 and 35, including SQLite, MariaDB and PostgreSQL installations.
+]]></description>
+	<version>1.1.12</version>
 	<licence>AGPL-3.0-or-later</licence>
 	<author mail="contact@ti2m.dev">Timm Meisinger</author>
 	<namespace>Abonnieren</namespace>

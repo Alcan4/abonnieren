@@ -22,11 +22,13 @@ class DownloadRequestPolicy {
 		}
 		$path = strtolower(rawurldecode($path));
 
-		// Files UI downloads, desktop clients, WebDAV clients and public DAV.
+		// Current Files UI downloads use the node's DAV source URL. This also
+		// covers desktop/WebDAV clients and authenticated or public shares.
 		if (preg_match('~/(?:remote|public)\.php/(?:dav/(?:files|public-files)(?:/|$)|webdav(?:/|$))~', $path) === 1) {
 			return true;
 		}
 
+		// Preserve public-share browser downloads and the legacy Files route.
 		return preg_match('~/(?:index\.php/)?s/[^/]+/download(?:/|$)~', $path) === 1
 			|| preg_match('~/(?:index\.php/)?apps/files/ajax/download\.php$~', $path) === 1;
 	}

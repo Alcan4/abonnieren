@@ -9,6 +9,7 @@ use OCA\Abonnieren\BackgroundJob\ReconcileOutboxJob;
 use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Service\MailRetryPolicy;
 use OCA\Abonnieren\Service\SubscriptionService;
+use OCA\Abonnieren\Service\SummaryMailBuilder;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\BackgroundJob\IJobList;
 use OCP\DB\IResult;
@@ -55,7 +56,8 @@ class MailOutboxRecoveryTest extends TestCase {
 			$this->createMock(IUserManager::class),
 			$this->createMock(SubscriptionService::class),
 			$this->createMock(IMailer::class),
-			$this->createMock(LoggerInterface::class));
+			$this->createMock(LoggerInterface::class),
+			$this->createMock(SummaryMailBuilder::class));
 	}
 
 	public function testReconcilerReschedulesOrphanedPendingRows(): void {
@@ -65,9 +67,12 @@ class MailOutboxRecoveryTest extends TestCase {
 		$this->withRows($due, [['id' => 99]]);
 		$cleanup = $this->query();
 		$cleanup->expects($this->once())->method('executeStatement');
+		$scopeCleanup = $this->query();
+		$scopeCleanup->expects($this->once())->method('delete')->with('abonnieren_upload_scopes')->willReturnSelf();
+		$scopeCleanup->expects($this->once())->method('executeStatement');
 
 		$db = $this->createMock(IDBConnection::class);
-		$db->method('getQueryBuilder')->willReturnOnConsecutiveCalls($expired, $due, $cleanup);
+		$db->method('getQueryBuilder')->willReturnOnConsecutiveCalls($expired, $due, $cleanup, $scopeCleanup);
 		$jobs = $this->createMock(IJobList::class);
 		$jobs->expects($this->once())->method('scheduleAfter')
 			->with(DeliverMailJob::class, self::callback(static fn ($when): bool => is_int($when) && $when <= time()), ['id' => 99]);
@@ -82,9 +87,11 @@ class MailOutboxRecoveryTest extends TestCase {
 		$due = $this->query();
 		$this->withRows($due, []);
 		$cleanup = $this->query();
+		$scopeCleanup = $this->query();
+		$scopeCleanup->expects($this->once())->method('executeStatement');
 
 		$db = $this->createMock(IDBConnection::class);
-		$db->method('getQueryBuilder')->willReturnOnConsecutiveCalls($expired, $recover, $due, $cleanup);
+		$db->method('getQueryBuilder')->willReturnOnConsecutiveCalls($expired, $recover, $due, $cleanup, $scopeCleanup);
 		$jobs = $this->createMock(IJobList::class);
 		$jobs->expects($this->once())->method('scheduleAfter')
 			->with(DeliverMailJob::class, self::callback(static fn ($when): bool =>
@@ -101,9 +108,11 @@ class MailOutboxRecoveryTest extends TestCase {
 		$due = $this->query();
 		$this->withRows($due, []);
 		$cleanup = $this->query();
+		$scopeCleanup = $this->query();
+		$scopeCleanup->expects($this->once())->method('executeStatement');
 
 		$db = $this->createMock(IDBConnection::class);
-		$db->method('getQueryBuilder')->willReturnOnConsecutiveCalls($expired, $expire, $due, $cleanup);
+		$db->method('getQueryBuilder')->willReturnOnConsecutiveCalls($expired, $expire, $due, $cleanup, $scopeCleanup);
 		$jobs = $this->createMock(IJobList::class);
 		$jobs->expects($this->never())->method('scheduleAfter');
 		$this->service($db, $jobs)->reconcile();

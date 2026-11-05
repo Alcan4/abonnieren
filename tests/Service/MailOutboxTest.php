@@ -7,6 +7,7 @@ namespace OCA\Abonnieren\Tests\Service;
 use OCA\Abonnieren\BackgroundJob\DeliverMailJob;
 use OCA\Abonnieren\Service\MailOutbox;
 use OCA\Abonnieren\Service\SubscriptionService;
+use OCA\Abonnieren\Service\SummaryMailBuilder;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\BackgroundJob\IJobList;
 use OCP\DB\QueryBuilder\IQueryBuilder;
@@ -37,7 +38,7 @@ class MailOutboxTest extends TestCase {
 		$node->method('getId')->willReturn(42);
 		$outbox = new MailOutbox($db, $jobs, $this->createMock(IRootFolder::class),
 			$this->createMock(IUserManager::class), $this->createMock(SubscriptionService::class),
-			$mailer, $this->createMock(LoggerInterface::class));
+			$mailer, $this->createMock(LoggerInterface::class), $this->createMock(SummaryMailBuilder::class));
 
 		$outbox->enqueue('subscriber', $node, SubscriptionService::EVENT_UPLOAD, 'uploader',
 			false, 'File uploaded', 'Plain body', '<p>HTML body</p>');
